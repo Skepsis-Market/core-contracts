@@ -25,6 +25,7 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public constant SOLVENCY_DUST = 1000;
     uint256 public constant CACHE_RESET_INTERVAL = 100;
     uint256 public constant MAX_FEE_BPS = 500;
+    uint256 public constant SPREAD_FACTOR = 2_160000;
 
     uint256 public immutable marketId;
     address public immutable creator;
@@ -36,6 +37,8 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public poolBalance;
     uint256 public initialDeposit;
     uint256 public bucketCount;
+
+    uint256 private cachedLnBucketCount;
 
     mapping(uint256 => Bucket) public buckets;
 
@@ -130,6 +133,10 @@ contract LMSRMarket is ReentrancyGuard {
 
         bucketCount = _bucketRanges.length - 1;
 
+        cachedLnBucketCount = bucketCount.fromU256().ln();
+        
+        _updateDynamicAlpha();
+
         uint256 uniformShares = _poolBalance.toWad() / bucketCount;
         uint256 sumExp = 0;
 
@@ -154,7 +161,7 @@ contract LMSRMarket is ReentrancyGuard {
             revert SolvencyViolation();
         }
 
-        emit MarketCreated(_marketId, _creator, _poolBalance, _alpha, bucketCount);
+        emit MarketCreated(_marketId, _creator, _poolBalance, alpha, bucketCount);
     }
 
     function getBucket(uint256 bucketId) external view returns (Bucket memory) {
@@ -164,6 +171,16 @@ contract LMSRMarket is ReentrancyGuard {
 
     function getCachedSumExp() external view returns (uint256) {
         return cachedSumExp;
+    }
+
+    function _updateDynamicAlpha() internal {
+        if (bucketCount == 0) return;
+        
+        uint256 poolBalanceWad = poolBalance.toWad();
+        uint256 lnN = cachedLnBucketCount;
+        
+        uint256 divisor = SPREAD_FACTOR.mulWad(lnN);
+        alpha = poolBalanceWad.divWad(divisor);
     }
 
     function isSumExpDirty() external view returns (bool) {
@@ -288,6 +305,8 @@ contract LMSRMarket is ReentrancyGuard {
         
         _updateSumExpIncremental(bucketId, oldShares, newShares);
         
+        _updateDynamicAlpha();
+        
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
         
@@ -383,6 +402,8 @@ contract LMSRMarket is ReentrancyGuard {
         
         uint256 oldShares = buckets[bucketId].shares;
         buckets[bucketId].shares = newShares;
+        
+        _updateDynamicAlpha();
         
         _updateSumExpIncremental(bucketId, oldShares, newShares);
         

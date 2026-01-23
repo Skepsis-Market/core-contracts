@@ -53,7 +53,12 @@ contract LMSRMarketTest is Test {
         assertEq(market.factory(), factory);
         assertEq(address(market.usdcToken()), address(usdc));
         assertEq(market.positionNFT(), positionNFT);
-        assertEq(market.alpha(), alpha);
+        
+        uint256 calculatedAlpha = poolBalance.toWad().divWad(
+            market.SPREAD_FACTOR().mulWad((uint256(4)).fromU256().ln())
+        );
+        assertEq(market.alpha(), calculatedAlpha, "Alpha should match dynamic calculation");
+        
         assertEq(market.poolBalance(), poolBalance);
         assertEq(market.initialDeposit(), poolBalance);
         assertEq(market.bucketCount(), 4);
