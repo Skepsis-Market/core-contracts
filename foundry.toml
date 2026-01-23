@@ -1,0 +1,22 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc_version = "0.8.24"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1_000_000
+via_ir = true
+remappings = [
+    "@prb/math/=lib/prb-math/src/",
+    "@openzeppelin/=lib/openzeppelin-contracts/contracts/"
+]
+
+[rpc_endpoints]
+arbitrum = "${ARBITRUM_RPC_URL}"
+arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
+
+[etherscan]
+arbitrum = { key = "${ARBISCAN_API_KEY}" }
+arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}" }
