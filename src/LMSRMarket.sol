@@ -313,4 +313,90 @@ contract LMSRMarket is ReentrancyGuard {
         
         return bucketExp.divWad(sumExp);
     }
+
+    function calculateReturnForShares(uint256 bucketId, uint256 sharesToSell)
+        external
+        view
+        returns (uint256 returnUSDC)
+    {
+        if (bucketId >= bucketCount) revert InvalidBucket();
+        if (sharesToSell == 0) return 0;
+        if (sharesToSell > buckets[bucketId].shares) revert InsufficientBalance();
+        
+        uint256 C_before = _calculateCostFunction();
+        
+        uint256 sumOther = 0;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            if (i != bucketId) {
+                uint256 exponent = buckets[i].shares.divWad(alpha);
+                sumOther += exponent.exp();
+            }
+        }
+        
+        uint256 newShares = buckets[bucketId].shares - sharesToSell;
+        uint256 exponent = newShares.divWad(alpha);
+        uint256 newBucketExp = exponent.exp();
+        
+        uint256 newSumExp = sumOther + newBucketExp;
+        uint256 lnNewSum = newSumExp.ln();
+        uint256 C_after = alpha.mulWad(lnNewSum);
+        
+        uint256 returnWad = C_before - C_after;
+        returnUSDC = returnWad.fromWad();
+    }
+
+    function sellShares(uint256 bucketId, uint256 sharesToSell, uint256 minPayoutOut)
+        external
+        nonReentrant
+        onlyActive
+        returns (uint256 payoutUSDC)
+    {
+        if (bucketId >= bucketCount) revert InvalidBucket();
+        if (sharesToSell == 0) revert InvalidParameters();
+        if (sharesToSell > buckets[bucketId].shares) revert InsufficientBalance();
+        
+        uint256 C_before = _calculateCostFunction();
+        
+        uint256 sumOther = 0;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            if (i != bucketId) {
+                uint256 exponent = buckets[i].shares.divWad(alpha);
+                sumOther += exponent.exp();
+            }
+        }
+        
+        uint256 newShares = buckets[bucketId].shares - sharesToSell;
+        uint256 exponent = newShares.divWad(alpha);
+        uint256 newBucketExp = exponent.exp();
+        
+        uint256 newSumExp = sumOther + newBucketExp;
+        uint256 lnNewSum = newSumExp.ln();
+        uint256 C_after = alpha.mulWad(lnNewSum);
+        
+        uint256 returnWad = C_before - C_after;
+        uint256 grossPayoutUSDC = returnWad.fromWad();
+        
+        uint256 feesUSDC = (grossPayoutUSDC * feeBps) / 10000;
+        payoutUSDC = grossPayoutUSDC - feesUSDC;
+        
+        if (payoutUSDC < minPayoutOut) revert InvalidParameters();
+        
+        uint256 oldShares = buckets[bucketId].shares;
+        buckets[bucketId].shares = newShares;
+        
+        _updateSumExpIncremental(bucketId, oldShares, newShares);
+        
+        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
+        uint256 lpFee = feesUSDC - protocolFee;
+        
+        poolBalance -= payoutUSDC;
+        feesCollectedLP += lpFee;
+        feesCollectedProtocol += protocolFee;
+        totalVolume += grossPayoutUSDC;
+        
+        usdcToken.transfer(msg.sender, payoutUSDC);
+        
+        uint256 newPrice = _calculatePrice(bucketId);
+        emit SharesSold(marketId, msg.sender, bucketId, sharesToSell, payoutUSDC, newPrice);
+    }
 }

@@ -248,4 +248,139 @@ contract LMSRMarketTest is Test {
         uint256 bucketExp = exponent.exp();
         return bucketExp.divWad(sumExp);
     }
+
+    function test_calculateReturnForShares_basic() public {
+        usdc.mint(buyer, 100_000000);
+        
+        vm.startPrank(buyer);
+        usdc.approve(address(market), 100_000000);
+        
+        uint256 costUSDC = 10_000000;
+        uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 netCostUSDC = costUSDC - feesUSDC;
+        uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
+        
+        market.buyShares(0, costUSDC, sharesBought);
+        vm.stopPrank();
+        
+        uint256 returnUSDC = market.calculateReturnForShares(0, sharesBought);
+        assertGt(returnUSDC, 0);
+        assertLt(returnUSDC, netCostUSDC);
+    }
+
+    function test_sellShares_returnsUSDC() public {
+        usdc.mint(buyer, 100_000000);
+        
+        vm.startPrank(buyer);
+        usdc.approve(address(market), 100_000000);
+        
+        uint256 costUSDC = 10_000000;
+        uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 netCostUSDC = costUSDC - feesUSDC;
+        uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
+        
+        market.buyShares(0, costUSDC, sharesBought);
+        
+        uint256 balanceBefore = usdc.balanceOf(buyer);
+        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        uint256 balanceAfter = usdc.balanceOf(buyer);
+        vm.stopPrank();
+        
+        assertEq(balanceAfter - balanceBefore, payoutUSDC);
+        assertGt(payoutUSDC, 0);
+    }
+
+    function test_sellShares_updatesPoolBalance() public {
+        usdc.mint(buyer, 100_000000);
+        
+        vm.startPrank(buyer);
+        usdc.approve(address(market), 100_000000);
+        
+        uint256 costUSDC = 10_000000;
+        uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 netCostUSDC = costUSDC - feesUSDC;
+        uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
+        
+        market.buyShares(0, costUSDC, sharesBought);
+        
+        uint256 poolBefore = market.poolBalance();
+        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        vm.stopPrank();
+        
+        assertEq(market.poolBalance(), poolBefore - payoutUSDC);
+    }
+
+    function test_sellShares_collectsFees() public {
+        usdc.mint(buyer, 100_000000);
+        
+        vm.startPrank(buyer);
+        usdc.approve(address(market), 100_000000);
+        
+        uint256 costUSDC = 10_000000;
+        uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 netCostUSDC = costUSDC - feesUSDC;
+        uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
+        
+        market.buyShares(0, costUSDC, sharesBought);
+        
+        uint256 lpFeesBefore = market.feesCollectedLP();
+        uint256 protocolFeesBefore = market.feesCollectedProtocol();
+        
+        market.sellShares(0, sharesBought, 0);
+        vm.stopPrank();
+        
+        assertGt(market.feesCollectedLP(), lpFeesBefore);
+        assertGt(market.feesCollectedProtocol(), protocolFeesBefore);
+    }
+
+    function test_sellShares_revertsOnSlippage() public {
+        usdc.mint(buyer, 100_000000);
+        
+        vm.startPrank(buyer);
+        usdc.approve(address(market), 100_000000);
+        
+        uint256 costUSDC = 10_000000;
+        uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 netCostUSDC = costUSDC - feesUSDC;
+        uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
+        
+        market.buyShares(0, costUSDC, sharesBought);
+        
+        uint256 expectedReturn = market.calculateReturnForShares(0, sharesBought);
+        
+        vm.expectRevert(LMSRMarket.InvalidParameters.selector);
+        market.sellShares(0, sharesBought, expectedReturn + 1);
+        vm.stopPrank();
+    }
+
+    function test_sellShares_revertsIfInsufficientShares() public {
+        vm.startPrank(buyer);
+        vm.expectRevert(LMSRMarket.InsufficientBalance.selector);
+        market.sellShares(0, 1000e18, 0);
+        vm.stopPrank();
+    }
+
+    function test_buyThenSell_roundTrip() public {
+        usdc.mint(buyer, 100_000000);
+        
+        vm.startPrank(buyer);
+        usdc.approve(address(market), 100_000000);
+        
+        uint256 costUSDC = 10_000000;
+        uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 netCostUSDC = costUSDC - feesUSDC;
+        uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
+        
+        uint256 balanceStart = usdc.balanceOf(buyer);
+        
+        market.buyShares(0, costUSDC, sharesBought);
+        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        
+        uint256 balanceEnd = usdc.balanceOf(buyer);
+        vm.stopPrank();
+        
+        uint256 totalFees = costUSDC - payoutUSDC;
+        assertEq(balanceStart - balanceEnd, totalFees);
+        assertGt(totalFees, 0);
+    }
 }
