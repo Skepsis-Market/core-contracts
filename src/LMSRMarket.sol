@@ -2,6 +2,7 @@
 pragma solidity 0.8.24;
 
 import {IUSDC} from "./interfaces/IUSDC.sol";
+import {IERC20Permit} from "@openzeppelin/token/ERC20/extensions/IERC20Permit.sol";
 import {FixedPointMath} from "./FixedPointMath.sol";
 import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
 
@@ -277,6 +278,93 @@ contract LMSRMarket is ReentrancyGuard {
         if (bucketId >= bucketCount) revert InvalidBucket();
         if (amountUSDC == 0) revert InvalidParameters();
         
+        uint256 costWad = amountUSDC.toWad();
+        uint256 C_before = _calculateCostFunction();
+        
+        uint256 sumOther = 0;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            if (i != bucketId) {
+                uint256 exponent = buckets[i].shares.divWad(alpha);
+                sumOther += exponent.exp();
+            }
+        }
+        
+        uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
+        uint256 netCostUSDC = amountUSDC - feesUSDC;
+        uint256 netCostWad = netCostUSDC.toWad();
+        
+        uint256 C_new = C_before + netCostWad;
+        uint256 expCNewOverAlpha = C_new.divWad(alpha).exp();
+        
+        uint256 innerTerm = expCNewOverAlpha - sumOther;
+        uint256 lnInnerTerm = innerTerm.ln();
+        uint256 newShares = alpha.mulWad(lnInnerTerm);
+        
+        sharesMinted = newShares - buckets[bucketId].shares;
+        
+        if (sharesMinted < minSharesOut) revert InvalidParameters();
+        
+        // Solvency check: newShares cannot exceed poolBalance AFTER adding net cost
+        uint256 maxSharesUSDC = newShares.fromWad();
+        uint256 newPoolBalance = poolBalance + netCostUSDC;
+        if (maxSharesUSDC > newPoolBalance + SOLVENCY_DUST) {
+            revert SolvencyViolation();
+        }
+        
+        uint256 oldShares = buckets[bucketId].shares;
+        buckets[bucketId].shares = newShares;
+        
+        _updateSumExpIncremental(bucketId, oldShares, newShares);
+        
+        _updateDynamicAlpha();
+        
+        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
+        uint256 lpFee = feesUSDC - protocolFee;
+        
+        poolBalance += netCostUSDC;
+        feesCollectedLP += lpFee;
+        feesCollectedProtocol += protocolFee;
+        totalVolume += amountUSDC;
+        
+        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
+        
+        uint256 newPrice = _calculatePrice(bucketId);
+        emit SharesPurchased(marketId, msg.sender, bucketId, amountUSDC, sharesMinted, newPrice);
+    }
+
+    /// @notice Buy shares with EIP-2612 permit signature (gasless approval)
+    /// @param bucketId The bucket to buy shares in
+    /// @param amountUSDC Amount of USDC to spend (6 decimals)
+    /// @param minSharesOut Minimum shares to receive for slippage protection
+    /// @param deadline Permit signature expiration timestamp
+    /// @param v ECDSA signature v component
+    /// @param r ECDSA signature r component
+    /// @param s ECDSA signature s component
+    /// @return sharesMinted Number of shares minted (18 decimals WAD)
+    function buySharesWithPermit(
+        uint256 bucketId,
+        uint256 amountUSDC,
+        uint256 minSharesOut,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant onlyActive returns (uint256 sharesMinted) {
+        if (bucketId >= bucketCount) revert InvalidBucket();
+        if (amountUSDC == 0) revert InvalidParameters();
+        
+        // Execute permit for gasless approval
+        IERC20Permit(address(usdcToken)).permit(
+            msg.sender,
+            address(this),
+            amountUSDC,
+            deadline,
+            v,
+            r,
+            s
+        );
+        
+        // Shared buy logic
         uint256 costWad = amountUSDC.toWad();
         uint256 C_before = _calculateCostFunction();
         

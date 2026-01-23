@@ -643,4 +643,118 @@ contract LMSRMarketTest is Test {
         assertEq(unrealizedProfit, expectedLoss, "LP should have predictable loss from uniform distribution");
         assertLt(unrealizedProfit, 0, "LP should have loss with no trading volume");
     }
+
+    // ============ Permit Tests ============
+
+    function test_buySharesWithPermit_worksWithValidSig() public {
+        uint256 permitAmount = 100_000000; // $100
+        uint256 deadline = block.timestamp + 1 hours;
+        
+        // Create buyer private key for signing
+        uint256 buyerPrivateKey = 0xBEEF;
+        address permitBuyer = vm.addr(buyerPrivateKey);
+        
+        usdc.mint(permitBuyer, permitAmount);
+        
+        // Generate EIP-2612 permit signature
+        bytes32 PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+        bytes32 permitHash = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                usdc.DOMAIN_SEPARATOR(),
+                keccak256(abi.encode(
+                    PERMIT_TYPEHASH,
+                    permitBuyer,
+                    address(market),
+                    permitAmount,
+                    usdc.nonces(permitBuyer),
+                    deadline
+                ))
+            )
+        );
+        
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(buyerPrivateKey, permitHash);
+        
+        vm.prank(permitBuyer);
+        uint256 sharesMinted = market.buySharesWithPermit(
+            0, // bucket 0
+            permitAmount,
+            0, // no slippage protection for simplicity
+            deadline,
+            v,
+            r,
+            s
+        );
+        
+        assertGt(sharesMinted, 0, "Should mint shares");
+        assertEq(usdc.balanceOf(permitBuyer), 0, "USDC should be transferred");
+    }
+
+    function test_buySharesWithPermit_revertsInvalidSig() public {
+        uint256 permitAmount = 100_000000;
+        uint256 deadline = block.timestamp + 1 hours;
+        
+        uint256 buyerPrivateKey = 0xBEEF;
+        address permitBuyer = vm.addr(buyerPrivateKey);
+        
+        usdc.mint(permitBuyer, permitAmount);
+        
+        // Generate signature with wrong private key
+        uint256 wrongPrivateKey = 0xDEAD;
+        
+        bytes32 PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+        bytes32 permitHash = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                usdc.DOMAIN_SEPARATOR(),
+                keccak256(abi.encode(
+                    PERMIT_TYPEHASH,
+                    permitBuyer,
+                    address(market),
+                    permitAmount,
+                    usdc.nonces(permitBuyer),
+                    deadline
+                ))
+            )
+        );
+        
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPrivateKey, permitHash);
+        
+        vm.prank(permitBuyer);
+        vm.expectRevert(); // Should revert with invalid signature
+        market.buySharesWithPermit(0, permitAmount, 0, deadline, v, r, s);
+    }
+
+    function test_buySharesWithPermit_revertsExpiredDeadline() public {
+        uint256 permitAmount = 100_000000;
+        uint256 deadline = block.timestamp - 1; // Expired deadline
+        
+        uint256 buyerPrivateKey = 0xBEEF;
+        address permitBuyer = vm.addr(buyerPrivateKey);
+        
+        usdc.mint(permitBuyer, permitAmount);
+        
+        bytes32 PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+        bytes32 permitHash = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                usdc.DOMAIN_SEPARATOR(),
+                keccak256(abi.encode(
+                    PERMIT_TYPEHASH,
+                    permitBuyer,
+                    address(market),
+                    permitAmount,
+                    usdc.nonces(permitBuyer),
+                    deadline
+                ))
+            )
+        );
+        
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(buyerPrivateKey, permitHash);
+        
+        vm.prank(permitBuyer);
+        vm.expectRevert(); // Should revert with expired deadline
+        market.buySharesWithPermit(0, permitAmount, 0, deadline, v, r, s);
+    }
 }
+

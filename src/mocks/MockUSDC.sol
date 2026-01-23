@@ -19,4 +19,9 @@ contract MockUSDC is ERC20, ERC20Permit {
     function burn(address from, uint256 amount) external {
         _burn(from, amount);
     }
+
+    /// @notice Helper for testing - returns the permit typehash
+    function PERMIT_TYPEHASH() external pure returns (bytes32) {
+        return keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+    }
 }
