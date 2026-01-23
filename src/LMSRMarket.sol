@@ -46,6 +46,7 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public winningBucket;
     uint256 public totalVolume;
     uint256 public resolutionTime;
+    bool public lpWithdrawn;
 
     uint256 public feeBps;
     uint256 public protocolFeeBps;
@@ -92,6 +93,13 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 indexed marketId,
         address indexed claimer,
         uint256 amount
+    );
+
+    event LPWithdrawal(
+        uint256 indexed marketId,
+        address indexed creator,
+        uint256 amount,
+        int256 profit
     );
 
     error InvalidParameters();
@@ -463,5 +471,59 @@ contract LMSRMarket is ReentrancyGuard {
         usdcToken.transfer(msg.sender, payoutUSDC);
 
         emit WinningsClaimed(marketId, msg.sender, payoutUSDC);
+    }
+
+    /// @notice Withdraw LP funds after market resolution (creator only)
+    /// @dev Can only withdraw after resolution, pays out remaining funds after all claims
+    function withdrawLP() external nonReentrant {
+        if (msg.sender != creator) revert Unauthorized();
+        if (status != MarketStatus.RESOLVED) revert MarketNotActive();
+        if (lpWithdrawn) revert InvalidParameters();
+
+        // Calculate total outstanding winning shares
+        uint256 totalWinningShares = buckets[winningBucket].shares;
+        uint256 totalPayoutsRequired = totalWinningShares.fromWad();
+
+        // Available for LP = current pool - unclaimed winnings
+        uint256 availableForLP = poolBalance - totalPayoutsRequired;
+
+        // Calculate profit (can be negative)
+        int256 profit = int256(availableForLP) - int256(initialDeposit);
+
+        // Reset pool balance to prevent re-withdrawal
+        uint256 withdrawAmount = availableForLP;
+        poolBalance = totalPayoutsRequired; // Leave exactly enough for remaining claims
+        lpWithdrawn = true;
+
+        // Transfer to creator
+        usdcToken.transfer(creator, withdrawAmount);
+
+        emit LPWithdrawal(marketId, creator, withdrawAmount, profit);
+    }
+
+    /// @notice Get LP profitability metrics
+    /// @return unrealizedProfit Current profit/loss (before withdrawal)
+    /// @return roi Return on investment in basis points
+    /// @return feesEarned Total fees collected for LP
+    function getLPProfitability() external view returns (int256 unrealizedProfit, int256 roi, uint256 feesEarned) {
+        if (status != MarketStatus.RESOLVED) {
+            // Pre-resolution: show current unrealized profit
+            unrealizedProfit = int256(poolBalance) - int256(initialDeposit);
+        } else {
+            // Post-resolution: calculate actual profit after winnings reserved
+            uint256 totalWinningShares = buckets[winningBucket].shares;
+            uint256 totalPayoutsRequired = totalWinningShares.fromWad();
+            uint256 availableForLP = poolBalance - totalPayoutsRequired;
+            unrealizedProfit = int256(availableForLP) - int256(initialDeposit);
+        }
+
+        // Calculate ROI in basis points (1 bp = 0.01%)
+        if (initialDeposit > 0) {
+            roi = (unrealizedProfit * 10000) / int256(initialDeposit);
+        } else {
+            roi = 0;
+        }
+
+        feesEarned = feesCollectedLP;
     }
 }

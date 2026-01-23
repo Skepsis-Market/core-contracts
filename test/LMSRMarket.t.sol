@@ -503,4 +503,144 @@ contract LMSRMarketTest is Test {
         
         assertEq(poolBefore - poolAfter, expectedDecrease, "Pool should decrease by payout amount");
     }
+
+    // ============================================
+    // LP WITHDRAWAL TESTS
+    // ============================================
+
+    function test_withdrawLP_calculatesCorrectly() public {
+        // User buys shares
+        uint256 bucketId = 1;
+        uint256 buyAmount = 200 * 1e6;
+        
+        usdc.mint(user1, buyAmount);
+        vm.startPrank(user1);
+        usdc.approve(address(market), buyAmount);
+        market.buyShares(bucketId, buyAmount, 0);
+        vm.stopPrank();
+        
+        uint256 poolBeforeResolution = market.poolBalance();
+        
+        // Resolve market
+        vm.prank(creator);
+        market.resolveMarket(bucketId);
+        
+        // Get winning shares
+        LMSRMarket.Bucket memory winningBucket = market.getBucket(bucketId);
+        uint256 winningShares = winningBucket.shares;
+        uint256 expectedPayouts = winningShares.fromWad();
+        uint256 expectedLP = poolBeforeResolution - expectedPayouts;
+        
+        // LP withdraws
+        uint256 creatorBalanceBefore = usdc.balanceOf(creator);
+        vm.prank(creator);
+        market.withdrawLP();
+        uint256 creatorBalanceAfter = usdc.balanceOf(creator);
+        
+        uint256 withdrawn = creatorBalanceAfter - creatorBalanceBefore;
+        assertEq(withdrawn, expectedLP, "LP should receive pool minus unclaimed winnings");
+    }
+
+    function test_withdrawLP_revertsIfNotResolved() public {
+        vm.prank(creator);
+        vm.expectRevert(LMSRMarket.MarketNotActive.selector);
+        market.withdrawLP();
+    }
+
+    function test_withdrawLP_revertsIfNotCreator() public {
+        vm.prank(creator);
+        market.resolveMarket(0);
+        
+        vm.prank(user1);
+        vm.expectRevert(LMSRMarket.Unauthorized.selector);
+        market.withdrawLP();
+    }
+
+    function test_withdrawLP_preventsDoubleWithdraw() public {
+        // Add some trading first so there's something to withdraw
+        uint256 bucketId = 0;
+        uint256 buyAmount = 50 * 1e6;
+        
+        usdc.mint(user1, buyAmount);
+        vm.startPrank(user1);
+        usdc.approve(address(market), buyAmount);
+        market.buyShares(bucketId, buyAmount, 0);
+        vm.stopPrank();
+        
+        vm.prank(creator);
+        market.resolveMarket(bucketId);
+        
+        vm.startPrank(creator);
+        market.withdrawLP();
+        
+        // Second withdrawal should fail because LP already withdrew
+        vm.expectRevert(LMSRMarket.InvalidParameters.selector);
+        market.withdrawLP();
+        vm.stopPrank();
+    }
+
+    function test_getLPProfitability_showsCorrectROI() public {
+        // Scenario: LP profits from trading fees
+        uint256 bucketId = 2;
+        uint256 buyAmount = 100 * 1e6;
+        
+        usdc.mint(user1, buyAmount);
+        vm.startPrank(user1);
+        usdc.approve(address(market), buyAmount);
+        market.buyShares(bucketId, buyAmount, 0);
+        vm.stopPrank();
+        
+        (int256 unrealizedProfit, int256 roi, uint256 feesEarned) = market.getLPProfitability();
+        
+        // LP should have profit from fees
+        assertGt(unrealizedProfit, 0, "LP should have unrealized profit from fees");
+        assertGt(roi, 0, "ROI should be positive");
+        assertGt(feesEarned, 0, "Fees should be collected");
+        
+        // Check ROI calculation: roi = (profit * 10000) / initialDeposit
+        int256 expectedROI = (unrealizedProfit * 10000) / int256(poolBalance);
+        assertEq(roi, expectedROI, "ROI should match formula");
+    }
+
+    function test_lpProfitScenario_highVolume() public {
+        // High trading volume = more fees for LP
+        uint256 totalVolume = 0;
+        
+        for (uint256 i = 0; i < 3; i++) {
+            uint256 buyAmount = 50 * 1e6;
+            totalVolume += buyAmount;
+            
+            address trader = address(uint160(1000 + i));
+            usdc.mint(trader, buyAmount);
+            
+            vm.startPrank(trader);
+            usdc.approve(address(market), buyAmount);
+            market.buyShares(i % 4, buyAmount, 0);
+            vm.stopPrank();
+        }
+        
+        (int256 unrealizedProfit, int256 roi,) = market.getLPProfitability();
+        
+        // LP should profit significantly from high volume fees
+        assertGt(unrealizedProfit, 0, "LP should profit from high volume");
+        assertGt(roi, 0, "ROI should be positive with high trading fees");
+    }
+
+    function test_lpLossScenario_lowVolume() public {
+        // Resolve immediately with no trading
+        // LP should get back (poolBalance - winningShares)
+        // Initial uniform distribution: each bucket has poolBalance/4 WAD shares
+        vm.prank(creator);
+        market.resolveMarket(0);
+        
+        (int256 unrealizedProfit,,) = market.getLPProfitability();
+        
+        // With uniform initial distribution, winning bucket has poolBalance/bucketCount shares
+        // Those shares cost exactly poolBalance/bucketCount in USDC to pay out
+        // So LP gets back: poolBalance - (poolBalance/4) = 3*poolBalance/4
+        // Profit = (3/4)*initialDeposit - initialDeposit = -1/4 * initialDeposit
+        int256 expectedLoss = -int256(poolBalance / 4);
+        assertEq(unrealizedProfit, expectedLoss, "LP should have predictable loss from uniform distribution");
+        assertLt(unrealizedProfit, 0, "LP should have loss with no trading volume");
+    }
 }
