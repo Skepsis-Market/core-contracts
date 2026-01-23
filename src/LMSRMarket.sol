@@ -419,6 +419,17 @@ contract LMSRMarket is ReentrancyGuard {
         emit SharesPurchased(marketId, msg.sender, bucketId, amountUSDC, sharesMinted, newPrice);
     }
 
+    /// @notice Check that all buckets satisfy solvency invariant
+    /// @dev Reverts if any bucket's shares exceed poolBalance + SOLVENCY_DUST
+    function _checkSolvency() internal view {
+        for (uint256 i = 0; i < bucketCount; i++) {
+            uint256 sharesUSDC = buckets[i].shares.fromWad();
+            if (sharesUSDC > poolBalance + SOLVENCY_DUST) {
+                revert SolvencyViolation();
+            }
+        }
+    }
+    
     function _calculatePrice(uint256 bucketId) internal view returns (uint256) {
         uint256 sumExp = cachedSumExp;
         if (sumExpDirty) {
@@ -512,6 +523,9 @@ contract LMSRMarket is ReentrancyGuard {
         feesCollectedLP += lpFee;
         feesCollectedProtocol += protocolFee;
         totalVolume += grossPayoutUSDC;
+        
+        // Solvency check: ensure no bucket exceeds poolBalance after sell
+        _checkSolvency();
         
         usdcToken.transfer(msg.sender, payoutUSDC);
         
