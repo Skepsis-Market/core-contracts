@@ -16,6 +16,7 @@ contract LMSRMarketTest is Test {
     address creator = address(0x1);
     address positionNFT = address(0x2);
     address buyer = address(0x123);
+    address user1 = address(0x456);
     
     uint256 marketId = 1;
     uint256 alpha = 100e18;
@@ -45,6 +46,9 @@ contract LMSRMarketTest is Test {
             feeBps,
             protocolFeeBps
         );
+        
+        // Simulate initial LP deposit
+        usdc.mint(address(market), poolBalance);
     }
 
     function test_constructor_initializesCorrectly() public view {
@@ -387,5 +391,116 @@ contract LMSRMarketTest is Test {
         uint256 totalFees = costUSDC - payoutUSDC;
         assertEq(balanceStart - balanceEnd, totalFees);
         assertGt(totalFees, 0);
+    }
+
+    // ============================================
+    // RESOLUTION & CLAIMS TESTS
+    // ============================================
+
+    function test_resolveMarket_setsWinningBucket() public {
+        uint256 winningBucketId = 2;
+        
+        vm.prank(creator);
+        market.resolveMarket(winningBucketId);
+        
+        assertEq(uint8(market.status()), uint8(LMSRMarket.MarketStatus.RESOLVED));
+        assertEq(market.winningBucket(), winningBucketId);
+        assertEq(market.resolutionTime(), block.timestamp);
+    }
+
+    function test_resolveMarket_revertsIfNotCreator() public {
+        vm.prank(user1);
+        vm.expectRevert(LMSRMarket.Unauthorized.selector);
+        market.resolveMarket(0);
+    }
+
+    function test_resolveMarket_revertsIfAlreadyResolved() public {
+        vm.prank(creator);
+        market.resolveMarket(1);
+        
+        vm.prank(creator);
+        vm.expectRevert(LMSRMarket.MarketAlreadyResolved.selector);
+        market.resolveMarket(2);
+    }
+
+    function test_resolveMarket_revertsIfInvalidBucket() public {
+        vm.prank(creator);
+        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
+        market.resolveMarket(99);
+    }
+
+    function test_claimWinnings_pays1PerShare() public {
+        // User buys shares in bucket 2 (smaller amount to avoid solvency issues)
+        uint256 bucketId = 2;
+        uint256 buyAmount = 100 * 1e6; // $100 (not $1000 to stay within solvency)
+        
+        usdc.mint(user1, buyAmount);
+        vm.startPrank(user1);
+        usdc.approve(address(market), buyAmount);
+        uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
+        console.log("sharesMinted:", sharesMinted);
+        console.log("sharesMinted in USDC units:", sharesMinted.fromWad());
+        vm.stopPrank();
+        
+        // Creator resolves to bucket 2
+        vm.prank(creator);
+        market.resolveMarket(bucketId);
+        
+        // User claims winnings
+        uint256 balanceBefore = usdc.balanceOf(user1);
+        console.log("balanceBefore:", balanceBefore);
+        vm.prank(user1);
+        market.claimWinnings(bucketId, sharesMinted);
+        
+        uint256 balanceAfter = usdc.balanceOf(user1);
+        uint256 payout = balanceAfter - balanceBefore;
+        console.log("balanceAfter:", balanceAfter);
+        console.log("payout:", payout);
+        
+        // Should receive exactly $1 per share (fromWad conversion)
+        uint256 expectedPayout = sharesMinted.fromWad();
+        console.log("expectedPayout:", expectedPayout);
+        assertEq(payout, expectedPayout, "Should pay $1 per winning share");
+    }
+
+    function test_claimWinnings_revertsIfNotResolved() public {
+        vm.prank(user1);
+        vm.expectRevert(LMSRMarket.MarketNotActive.selector);
+        market.claimWinnings(0, 1000);
+    }
+
+    function test_claimWinnings_revertsIfWrongBucket() public {
+        // Resolve to bucket 1
+        vm.prank(creator);
+        market.resolveMarket(1);
+        
+        // Try to claim from bucket 2
+        vm.prank(user1);
+        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
+        market.claimWinnings(2, 1000);
+    }
+
+    function test_claimWinnings_updatesPoolBalance() public {
+        uint256 bucketId = 1;
+        uint256 buyAmount = 100 * 1e6; // $100
+        
+        usdc.mint(user1, buyAmount);
+        vm.startPrank(user1);
+        usdc.approve(address(market), buyAmount);
+        uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
+        vm.stopPrank();
+        
+        uint256 poolBefore = market.poolBalance();
+        
+        vm.prank(creator);
+        market.resolveMarket(bucketId);
+        
+        vm.prank(user1);
+        market.claimWinnings(bucketId, sharesMinted);
+        
+        uint256 poolAfter = market.poolBalance();
+        uint256 expectedDecrease = sharesMinted.fromWad();
+        
+        assertEq(poolBefore - poolAfter, expectedDecrease, "Pool should decrease by payout amount");
     }
 }

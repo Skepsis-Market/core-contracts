@@ -295,8 +295,10 @@ contract LMSRMarket is ReentrancyGuard {
         
         if (sharesMinted < minSharesOut) revert InvalidParameters();
         
+        // Solvency check: newShares cannot exceed poolBalance AFTER adding net cost
         uint256 maxSharesUSDC = newShares.fromWad();
-        if (maxSharesUSDC > poolBalance + SOLVENCY_DUST) {
+        uint256 newPoolBalance = poolBalance + netCostUSDC;
+        if (maxSharesUSDC > newPoolBalance + SOLVENCY_DUST) {
             revert SolvencyViolation();
         }
         
@@ -419,5 +421,47 @@ contract LMSRMarket is ReentrancyGuard {
         
         uint256 newPrice = _calculatePrice(bucketId);
         emit SharesSold(marketId, msg.sender, bucketId, sharesToSell, payoutUSDC, newPrice);
+    }
+
+    /// @notice Resolve market with winning outcome (admin only)
+    /// @param _winningBucket The bucket ID that won
+    function resolveMarket(uint256 _winningBucket) external {
+        if (msg.sender != creator) revert Unauthorized();
+        if (status != MarketStatus.ACTIVE) revert MarketAlreadyResolved();
+        if (_winningBucket >= bucketCount) revert InvalidBucket();
+
+        status = MarketStatus.RESOLVED;
+        winningBucket = _winningBucket;
+        resolutionTime = block.timestamp;
+
+        emit MarketResolved(marketId, _winningBucket, block.timestamp);
+    }
+
+    /// @notice Claim winnings for a resolved market (winning shares pay $1 each)
+    /// @param bucketId The bucket to claim from
+    /// @param sharesToClaim Number of shares to claim (in WAD 18 decimals)
+    function claimWinnings(uint256 bucketId, uint256 sharesToClaim) external nonReentrant {
+        if (status != MarketStatus.RESOLVED) revert MarketNotActive();
+        if (bucketId != winningBucket) revert InvalidBucket();
+        if (sharesToClaim == 0) revert InvalidParameters();
+
+        // TODO: Check user's position balance from PositionNFT
+        // For now, we'll just check against bucket shares (will be replaced with NFT integration)
+        if (sharesToClaim > buckets[bucketId].shares) revert InsufficientBalance();
+
+        // Winning shares pay $1 per share: shares are in WAD, USDC is in 6 decimals
+        // So sharesWAD = USDC × 1e12 (toWad conversion)
+        // Therefore: payoutUSDC = shares / 1e12 (reverse the toWad)
+        // This means payoutUSDC = fromWad(shares)
+        uint256 payoutUSDC = sharesToClaim.fromWad();
+
+        // Update bucket shares
+        buckets[bucketId].shares -= sharesToClaim;
+        poolBalance -= payoutUSDC;
+
+        // Transfer winnings
+        usdcToken.transfer(msg.sender, payoutUSDC);
+
+        emit WinningsClaimed(marketId, msg.sender, payoutUSDC);
     }
 }
