@@ -1,0 +1,28 @@
+{
+  "network": "arbitrum-sepolia",
+  "chainId": 421614,
+  "rpcUrl": "https://sepolia-rollup.arbitrum.io/rpc",
+  "explorer": "https://sepolia.arbiscan.io",
+  "deployer": "PLACEHOLDER_DEPLOYER_ADDRESS",
+  "admin": "PLACEHOLDER_ADMIN_ADDRESS",
+  "timestamp": "PLACEHOLDER_TIMESTAMP",
+  "contracts": {
+    "MockUSDC": "PLACEHOLDER_USDC_ADDRESS",
+    "PositionNFT": "PLACEHOLDER_POSITION_NFT_ADDRESS",
+    "MarketFactory": "PLACEHOLDER_FACTORY_ADDRESS",
+    "TestMarket": "PLACEHOLDER_TEST_MARKET_ADDRESS"
+  },
+  "config": {
+    "defaultFeeBps": 200,
+    "protocolFeeBps": 2000,
+    "minPoolBalance": 100000000,
+    "maxPoolBalance": 1000000000000,
+    "maxBuckets": 100
+  },
+  "verification": {
+    "MockUSDC": "PLACEHOLDER_VERIFICATION_URL",
+    "PositionNFT": "PLACEHOLDER_VERIFICATION_URL",
+    "MarketFactory": "PLACEHOLDER_VERIFICATION_URL"
+  },
+  "notes": "This file will be populated after running the deployment script. Update placeholders with actual addresses."
+}
