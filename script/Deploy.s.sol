@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {PositionNFT} from "../src/PositionNFT.sol";
 import {MarketFactory} from "../src/MarketFactory.sol";
+import {Vault} from "../src/Vault.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 
 /// @notice Deployment script for Arbitrum Sepolia testnet
@@ -22,6 +23,7 @@ contract DeployScript is Script {
     MockUSDC public usdc;
     PositionNFT public positionNFT;
     MarketFactory public factory;
+    Vault public vault;
     
     function setUp() public {
         deployer = vm.envAddress("DEPLOYER_ADDRESS");
@@ -74,6 +76,18 @@ contract DeployScript is Script {
             console.log("Predicted:", predictedFactory);
             console.log("Actual:", address(factory));
         }
+
+        // Step 4b: Deploy Vault and wire up
+        console.log("\n4b. Deploying Vault...");
+        vault = new Vault(address(usdc), "Vault", "sVLT", deployer);
+        factory.setVault(address(vault));
+        vault.setFactory(address(factory));
+        console.log("Vault deployed at:", address(vault));
+
+        // Fund vault with deployer's USDC as initial LP
+        usdc.approve(address(vault), 100_000_000000); // $100k
+        vault.deposit(100_000_000000, deployer);
+        console.log("Deposited $100k to vault as initial LP");
         
         // Step 5: Create a test market (Bitcoin price on Feb 1, 2026)
         console.log("\n5. Creating test market: Bitcoin price on Feb 1, 2026...");
@@ -92,12 +106,18 @@ contract DeployScript is Script {
         bucketRanges[10] = 140_000; // > $140k
         
         uint256 poolBalance = 10_000_000000; // $10,000 USDC
-        uint256 alpha = 50; // Alpha parameter (will be updated dynamically)
-        
-        // Approve factory to spend USDC
-        usdc.approve(address(factory), poolBalance);
-        
-        address testMarket = factory.createMarket(poolBalance, bucketRanges, alpha, PROTOCOL_FEE_BPS);
+
+        // Whitelist deployer as a market creator
+        factory.setCreatorAllowance(deployer, 10);
+
+        MarketFactory.MarketParams memory p;
+        p.alpha          = poolBalance / 3; // sqrt(10) = 3
+        p.seedAmount     = poolBalance;
+        p.bucketRanges   = bucketRanges;
+        p.feeBps         = DEFAULT_FEE_BPS;
+        p.protocolFeeBps = PROTOCOL_FEE_BPS;
+
+        address testMarket = factory.createMarket(p);
         console.log("Test market created at:", testMarket);
         console.log("Market ID: 0");
         

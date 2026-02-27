@@ -228,3 +228,35 @@ Before mainnet:
 - [ ] Create 3-5 genesis markets
 - [ ] Monitor for 48 hours
 - [ ] Public announcement
+
+## Shipping Hardening Checklist (V1)
+
+### Contract Controls
+
+- [ ] For each market, configure alpha decay (`configureAlphaDecay`) with:
+  - [ ] `alphaFinal` floor between 20%-40% of `alphaInitial`
+  - [ ] `decayDuration` aligned to market timeline
+  - [ ] `decayStartTime` not before market opens
+- [ ] If using LP vaults, verify `createMarketWithVault` path and confirm:
+  - [ ] `vaultByMarket[market]` is set
+  - [ ] `LMSRMarket.lpVault()` equals vault address
+- [ ] Confirm `getWithdrawableSurplus()` is zero on fresh market (no unsafe early withdrawal)
+
+### Access Boundaries
+
+- [ ] Confirm unauthorized addresses cannot call:
+  - [ ] `addLiquidity`
+  - [ ] `withdrawSurplus`
+  - [ ] `setLPVault`
+- [ ] Confirm sell/claim paths require owned position tokens when PositionNFT is configured
+
+### Regression Gates
+
+- [ ] `forge test` passes in full
+- [ ] Invariants pass, including position-accounting invariant suite
+- [ ] Gas benchmark run recorded (`test/gas/GasBenchmark.t.sol`)
+
+### Emergency Readiness (Contract-Level)
+
+- [ ] Verify `pauseMarket` flow and ownership model
+- [ ] Verify resolution and LP withdrawal paths after pause/resume scenarios in testnet rehearsal

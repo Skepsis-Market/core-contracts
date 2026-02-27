@@ -153,7 +153,7 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             address(0xFACE), // factory
             address(usdc),
             address(0x2), // positionNFT
-            100e18, // alpha (will be overridden by dynamic alpha)
+            3_333_333333, // alpha = POOL / sqrt(10)
             POOL_BALANCE,
             bucketRanges,
             50, // 0.5% fee

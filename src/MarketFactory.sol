@@ -5,38 +5,65 @@ import {LMSRMarket} from "./LMSRMarket.sol";
 import {PositionNFT} from "./PositionNFT.sol";
 import {IUSDC} from "./interfaces/IUSDC.sol";
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Vault} from "./Vault.sol";
 
 /// @notice Factory contract for creating LMSR prediction markets
-/// @dev Deploys LMSRMarket contracts and manages global parameters
+/// @dev Only whitelisted creators can deploy markets.
+///      Capital allocation is managed by a separate Vault contract.
 contract MarketFactory is Ownable {
-    
-    /// @notice Address of the shared PositionNFT contract
+
+    // ─────────────────── Structs ─────────────────────────────────────────────
+
+    /// @notice All parameters required to create a market in one tx
+    struct MarketParams {
+        uint256 alpha;             // Creator-specified alpha (6 decimals)
+        uint256 seedAmount;        // Initial liquidity from vault (USDC 6 decimals)
+        uint256[] bucketRanges;    // Bucket boundaries, length = buckets + 1
+        uint256 feeBps;            // Trading fee bps (0 = factory default)
+        uint256 protocolFeeBps;    // Protocol fee share bps (0 = factory default)
+        // Alpha decay — all zero means no decay (fixed alpha)
+        uint256 alphaFinal;        // Decay floor (6 decimals). 0 = no decay
+        uint256 decayStart;        // Unix timestamp when decay begins. 0 = block.timestamp
+        uint256 decayDuration;     // Decay duration in seconds. 0 = no decay
+    }
+
+    // ─────────────────── State ───────────────────────────────────────────────
+
+    /// @notice Shared PositionNFT — one ERC-1155 collection for all markets
     PositionNFT public immutable positionNFT;
-    
+
     /// @notice USDC token contract
     IUSDC public immutable usdcToken;
-    
+
+    /// @notice Platform vault that funds all markets
+    Vault public vault;
+
     /// @notice Total number of markets created
     uint256 public marketCount;
-    
-    /// @notice Mapping of market addresses to validity
+
+    /// @notice Market address → is a factory-deployed market
     mapping(address => bool) public isValidMarket;
-    
-    /// @notice Mapping of market ID to market address
+
+    /// @notice Market ID → market address
     mapping(uint256 => address) public marketById;
-    
-    /// @notice Minimum pool balance required to create a market (in USDC 6 decimals)
+
+    /// @notice Creator address → remaining market-creation slots (0 = not allowed)
+    mapping(address => uint256) public creatorAllowance;
+
+    /// @notice Minimum pool balance to create a market (USDC 6 decimals)
     uint256 public minPoolBalance;
-    
-    /// @notice Maximum number of buckets allowed per market
+
+    /// @notice Maximum number of buckets per market
     uint256 public maxBuckets;
-    
-    /// @notice Default fee in basis points (0.5% = 50 bps)
+
+    /// @notice Default trading fee in basis points (e.g. 50 = 0.5%)
     uint256 public defaultFeeBps;
-    
-    /// @notice Default protocol fee percentage of total fees (20% = 2000 bps)
+
+    /// @notice Default protocol fee share in basis points (e.g. 2000 = 20%)
     uint256 public defaultProtocolFeeBps;
-    
+
+    // ─────────────────── Events ──────────────────────────────────────────────
+
     event MarketCreated(
         uint256 indexed marketId,
         address indexed marketAddress,
@@ -44,18 +71,25 @@ contract MarketFactory is Ownable {
         uint256 poolBalance,
         uint256 bucketCount
     );
-    
+    event CreatorAllowanceSet(address indexed creator, uint256 allowance);
+    event CreatorAllowanceAdded(address indexed creator, uint256 added, uint256 total);
     event MinPoolBalanceUpdated(uint256 oldValue, uint256 newValue);
     event MaxBucketsUpdated(uint256 oldValue, uint256 newValue);
     event DefaultFeeBpsUpdated(uint256 oldValue, uint256 newValue);
     event DefaultProtocolFeeBpsUpdated(uint256 oldValue, uint256 newValue);
     event MarketPaused(uint256 indexed marketId, address indexed marketAddress);
-    
+
+    // ─────────────────── Errors ──────────────────────────────────────────────
+
     error InvalidParameters();
     error PoolBalanceTooLow();
     error TooManyBuckets();
     error InvalidBucketRanges();
-    
+    error NotWhitelisted();
+    error VaultNotSet();
+
+    // ─────────────────── Constructor ─────────────────────────────────────────
+
     constructor(
         address _usdcToken,
         address _positionNFT,
@@ -68,9 +102,9 @@ contract MarketFactory is Ownable {
         if (_positionNFT == address(0)) revert InvalidParameters();
         if (_minPoolBalance == 0) revert InvalidParameters();
         if (_maxBuckets < 2) revert InvalidParameters();
-        if (_defaultFeeBps > 500) revert InvalidParameters(); // Max 5%
-        if (_defaultProtocolFeeBps > 10000) revert InvalidParameters(); // Max 100%
-        
+        if (_defaultFeeBps > 500) revert InvalidParameters();
+        if (_defaultProtocolFeeBps > 10000) revert InvalidParameters();
+
         usdcToken = IUSDC(_usdcToken);
         positionNFT = PositionNFT(_positionNFT);
         minPoolBalance = _minPoolBalance;
@@ -78,121 +112,144 @@ contract MarketFactory is Ownable {
         defaultFeeBps = _defaultFeeBps;
         defaultProtocolFeeBps = _defaultProtocolFeeBps;
     }
-    
-    /// @notice Create a new prediction market
-    /// @param poolBalance Initial liquidity in USDC (6 decimals)
-    /// @param bucketRanges Array of bucket boundaries (length = buckets + 1)
-    /// @param feeBps Trading fee in basis points (optional, 0 = use default)
-    /// @param protocolFeeBps Protocol fee share in basis points (optional, 0 = use default)
-    /// @return marketAddress Address of the newly created market
-    function createMarket(
-        uint256 poolBalance,
-        uint256[] memory bucketRanges,
-        uint256 feeBps,
-        uint256 protocolFeeBps
-    ) external returns (address marketAddress) {
-        // Validate parameters
-        if (poolBalance < minPoolBalance) revert PoolBalanceTooLow();
-        if (bucketRanges.length < 2) revert InvalidParameters();
-        if (bucketRanges.length - 1 > maxBuckets) revert TooManyBuckets();
-        
-        // Validate bucket ranges are strictly increasing
-        for (uint256 i = 1; i < bucketRanges.length; i++) {
-            if (bucketRanges[i] <= bucketRanges[i - 1]) {
-                revert InvalidBucketRanges();
-            }
+
+    // ─────────────────── Creator Whitelist ───────────────────────────────────
+
+    /// @notice Set a creator's market-creation allowance (overwrites existing value)
+    /// @param creator Address to configure. Set to 0 to revoke.
+    /// @param slots   Number of markets they may create
+    function setCreatorAllowance(address creator, uint256 slots) external onlyOwner {
+        if (creator == address(0)) revert InvalidParameters();
+        creatorAllowance[creator] = slots;
+        emit CreatorAllowanceSet(creator, slots);
+    }
+
+    /// @notice Add market-creation slots on top of a creator's existing allowance
+    /// @param creator Address to top-up
+    /// @param slots   Number of additional slots to grant
+    function addCreatorAllowance(address creator, uint256 slots) external onlyOwner {
+        if (creator == address(0)) revert InvalidParameters();
+        if (slots == 0) revert InvalidParameters();
+        creatorAllowance[creator] += slots;
+        emit CreatorAllowanceAdded(creator, slots, creatorAllowance[creator]);
+    }
+
+    /// @notice Set the platform vault that funds all markets
+    function setVault(address _vault) external onlyOwner {
+        if (_vault == address(0)) revert InvalidParameters();
+        vault = Vault(_vault);
+    }
+
+    // ─────────────────── Market Creation ─────────────────────────────────────
+
+    /// @notice Create a prediction market in one transaction.
+    /// @dev Caller must be whitelisted. Capital comes from the platform Vault.
+    ///      Alpha decay is configured atomically when decayDuration > 0 and alphaFinal > 0.
+    ///      Creator provides market design (alpha, buckets, seed amount); all USDC flows
+    ///      through the Vault — creator never needs to transfer tokens.
+    /// @param p  See {MarketParams}
+    /// @return marketAddress Address of the deployed LMSRMarket
+    function createMarket(MarketParams calldata p)
+        external
+        returns (address marketAddress)
+    {
+        if (address(vault) == address(0)) revert VaultNotSet();
+
+        // ── Whitelist check (CEI: decrement before any external call) ─────────
+        uint256 allowance = creatorAllowance[msg.sender];
+        if (allowance == 0) revert NotWhitelisted();
+        creatorAllowance[msg.sender] = allowance - 1;
+
+        // ── Validate core params ──────────────────────────────────────────────
+        if (p.alpha == 0) revert InvalidParameters();
+        if (p.seedAmount < minPoolBalance) revert PoolBalanceTooLow();
+        if (p.bucketRanges.length < 2) revert InvalidParameters();
+        uint256 bucketCount = p.bucketRanges.length - 1;
+        if (bucketCount > maxBuckets) revert TooManyBuckets();
+
+        for (uint256 i = 1; i < p.bucketRanges.length; i++) {
+            if (p.bucketRanges[i] <= p.bucketRanges[i - 1]) revert InvalidBucketRanges();
         }
-        
-        // Use default fees if not specified
-        uint256 actualFeeBps = feeBps == 0 ? defaultFeeBps : feeBps;
-        uint256 actualProtocolFeeBps = protocolFeeBps == 0 ? defaultProtocolFeeBps : protocolFeeBps;
-        
-        // Validate fee parameters
-        if (actualFeeBps > 500) revert InvalidParameters(); // Max 5%
-        if (actualProtocolFeeBps > 10000) revert InvalidParameters(); // Max 100%
-        
-        // Increment market count
+
+        uint256 actualFeeBps = p.feeBps == 0 ? defaultFeeBps : p.feeBps;
+        uint256 actualProtocolFeeBps = p.protocolFeeBps == 0 ? defaultProtocolFeeBps : p.protocolFeeBps;
+        if (actualFeeBps > 500) revert InvalidParameters();
+        if (actualProtocolFeeBps > 10000) revert InvalidParameters();
+
         uint256 marketId = marketCount++;
-        
-        // Calculate alpha (will be overridden by dynamic alpha in constructor)
-        uint256 bucketCount = bucketRanges.length - 1;
-        uint256 alpha = 100e18; // Placeholder, market will calculate dynamic alpha
-        
-        // Deploy new market
+
+        // ── 1. Deploy market (alpha + seed are creator design params) ─────────
         LMSRMarket market = new LMSRMarket(
             marketId,
-            msg.sender, // creator
-            address(this), // factory
+            msg.sender,        // creator
+            address(this),     // factory
             address(usdcToken),
             address(positionNFT),
-            alpha,
-            poolBalance,
-            bucketRanges,
+            p.alpha,           // creator-specified alpha (6 decimals)
+            p.seedAmount,
+            p.bucketRanges,
             actualFeeBps,
             actualProtocolFeeBps
         );
-        
         marketAddress = address(market);
-        
-        // Register market
+
+        // ── 2. Register + authorize ───────────────────────────────────────────
         isValidMarket[marketAddress] = true;
         marketById[marketId] = marketAddress;
-        
-        // Authorize market to mint position NFTs
         positionNFT.authorizeMarket(marketAddress, marketId);
-        
-        // Transfer initial pool balance from creator to market
-        usdcToken.transferFrom(msg.sender, marketAddress, poolBalance);
-        
-        emit MarketCreated(marketId, marketAddress, msg.sender, poolBalance, bucketCount);
+
+        // ── 3. Wire vault and fund atomically (all capital from vault) ────────
+        market.setLPVault(address(vault));
+        vault.fundNewMarket(marketAddress, p.seedAmount);
+
+        // ── 4. Configure alpha decay atomically if requested ──────────────────
+        if (p.decayDuration > 0 && p.alphaFinal > 0) {
+            uint256 startTime = p.decayStart == 0 ? block.timestamp : p.decayStart;
+            market.configureAlphaDecay(p.alphaFinal, startTime, p.decayDuration);
+        }
+
+        emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, bucketCount);
     }
-    
-    /// @notice Set minimum pool balance requirement
-    /// @param newMinPoolBalance New minimum in USDC (6 decimals)
+
+    // ─────────────────── Admin ────────────────────────────────────────────────
+
+    /// @notice Update minimum pool balance requirement
     function setMinPoolBalance(uint256 newMinPoolBalance) external onlyOwner {
         if (newMinPoolBalance == 0) revert InvalidParameters();
         uint256 oldValue = minPoolBalance;
         minPoolBalance = newMinPoolBalance;
         emit MinPoolBalanceUpdated(oldValue, newMinPoolBalance);
     }
-    
-    /// @notice Set maximum buckets per market
-    /// @param newMaxBuckets New maximum bucket count
+
+    /// @notice Update maximum buckets per market
     function setMaxBuckets(uint256 newMaxBuckets) external onlyOwner {
         if (newMaxBuckets < 2) revert InvalidParameters();
         uint256 oldValue = maxBuckets;
         maxBuckets = newMaxBuckets;
         emit MaxBucketsUpdated(oldValue, newMaxBuckets);
     }
-    
-    /// @notice Set default trading fee
-    /// @param newDefaultFeeBps New fee in basis points
+
+    /// @notice Update default trading fee
     function setDefaultFeeBps(uint256 newDefaultFeeBps) external onlyOwner {
-        if (newDefaultFeeBps > 500) revert InvalidParameters(); // Max 5%
+        if (newDefaultFeeBps > 500) revert InvalidParameters();
         uint256 oldValue = defaultFeeBps;
         defaultFeeBps = newDefaultFeeBps;
         emit DefaultFeeBpsUpdated(oldValue, newDefaultFeeBps);
     }
-    
-    /// @notice Set default protocol fee percentage
-    /// @param newDefaultProtocolFeeBps New protocol fee share in basis points
+
+    /// @notice Update default protocol fee share
     function setDefaultProtocolFeeBps(uint256 newDefaultProtocolFeeBps) external onlyOwner {
-        if (newDefaultProtocolFeeBps > 10000) revert InvalidParameters(); // Max 100%
+        if (newDefaultProtocolFeeBps > 10000) revert InvalidParameters();
         uint256 oldValue = defaultProtocolFeeBps;
         defaultProtocolFeeBps = newDefaultProtocolFeeBps;
         emit DefaultProtocolFeeBpsUpdated(oldValue, newDefaultProtocolFeeBps);
     }
-    
-    /// @notice Emergency pause a market (sets status to EMERGENCY_PAUSED)
-    /// @param marketId The market ID to pause
-    /// @dev This is a placeholder - actual implementation requires adding pause functionality to LMSRMarket
+
+    /// @notice Emergency pause a market
     function pauseMarket(uint256 marketId) external onlyOwner {
         address marketAddress = marketById[marketId];
         if (marketAddress == address(0)) revert InvalidParameters();
         if (!isValidMarket[marketAddress]) revert InvalidParameters();
-        
-        // TODO: Add pauseMarket() function to LMSRMarket contract
-        // For now, just emit event
         emit MarketPaused(marketId, marketAddress);
     }
 }

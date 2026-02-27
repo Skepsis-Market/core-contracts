@@ -6,6 +6,7 @@ import {MarketFactory} from "../../src/MarketFactory.sol";
 import {LMSRMarket} from "../../src/LMSRMarket.sol";
 import {PositionNFT} from "../../src/PositionNFT.sol";
 import {MockUSDC} from "../../src/mocks/MockUSDC.sol";
+import {Vault} from "../../src/Vault.sol";
 
 /// @notice Gas benchmarking tests for LMSR market operations
 /// @dev Run with: forge test --match-contract GasBenchmarkTest --gas-report
@@ -13,6 +14,7 @@ contract GasBenchmarkTest is Test {
     MarketFactory public factory;
     PositionNFT public positionNFT;
     MockUSDC public usdc;
+    Vault public vault;
     
     address admin = address(0x1);
     address creator = address(0x2);
@@ -42,13 +44,53 @@ contract GasBenchmarkTest is Test {
             2000 // defaultProtocolFeeBps
         );
         
+        // Whitelist the market creator
+        factory.setCreatorAllowance(creator, 100);
+
+        // Deploy vault and wire up
+        vault = new Vault(address(usdc), "Vault", "sVLT", admin);
+        factory.setVault(address(vault));
+        vault.setFactory(address(factory));
+
         vm.stopPrank();
-        
-        // Mint USDC
-        usdc.mint(creator, 100000_000000);
+
+        // Fund vault via LP deposit
+        address lp = address(0x4);
+        usdc.mint(lp, 10_000_000_000000);
+        vm.startPrank(lp);
+        usdc.approve(address(vault), 10_000_000_000000);
+        vault.deposit(10_000_000_000000, lp);
+        vm.stopPrank();
+
+        // Mint USDC for trader
         usdc.mint(trader, 100000_000000);
     }
     
+    // ── Helper ──────────────────────────────────────────────────────────────
+
+    function _params(
+        uint256 sa,
+        uint256[] memory br,
+        uint256 feeBps,
+        uint256 protoBps
+    ) internal pure returns (MarketFactory.MarketParams memory p) {
+        uint256 buckets = br.length - 1;
+        p.alpha        = sa / _isqrt(buckets);
+        p.seedAmount   = sa;
+        p.bucketRanges = br;
+        p.feeBps       = feeBps;
+        p.protocolFeeBps = protoBps;
+    }
+
+    function _isqrt(uint256 x) internal pure returns (uint256) {
+        if (x == 0) return 0;
+        if (x <= 3) return 1;
+        uint256 z = (x + 1) / 2;
+        uint256 y = x;
+        while (z < y) { y = z; z = (x / z + z) / 2; }
+        return y;
+    }
+
     /// @notice Benchmark: Create market with 10 buckets
     function testGas_createMarket_10buckets() public {
         uint256[] memory bucketRanges = new uint256[](11);
@@ -56,36 +98,30 @@ contract GasBenchmarkTest is Test {
             bucketRanges[i] = i * 10;
         }
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
+        vm.prank(creator);
+        factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
     }
-    
+
     /// @notice Benchmark: Create market with 50 buckets
     function testGas_createMarket_50buckets() public {
         uint256[] memory bucketRanges = new uint256[](51);
         for (uint256 i = 0; i <= 50; i++) {
             bucketRanges[i] = i * 2;
         }
-        
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
+
+        vm.prank(creator);
+        factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
     }
-    
+
     /// @notice Benchmark: Create market with 100 buckets
     function testGas_createMarket_100buckets() public {
         uint256[] memory bucketRanges = new uint256[](101);
         for (uint256 i = 0; i <= 100; i++) {
             bucketRanges[i] = i;
         }
-        
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
+
+        vm.prank(creator);
+        factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
     }
     
     /// @notice Benchmark: Buy shares in 10-bucket market
@@ -307,12 +343,10 @@ contract GasBenchmarkTest is Test {
         for (uint256 i = 0; i <= numBuckets; i++) {
             bucketRanges[i] = (i * 100) / numBuckets;
         }
-        
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
-        
+
+        vm.prank(creator);
+        address marketAddress = factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
+
         return LMSRMarket(marketAddress);
     }
 }

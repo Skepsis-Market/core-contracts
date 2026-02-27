@@ -6,6 +6,7 @@ import {MarketFactory} from "../../src/MarketFactory.sol";
 import {LMSRMarket} from "../../src/LMSRMarket.sol";
 import {PositionNFT} from "../../src/PositionNFT.sol";
 import {MockUSDC} from "../../src/mocks/MockUSDC.sol";
+import {Vault} from "../../src/Vault.sol";
 
 /// @notice Integration tests for full market lifecycle
 /// @dev Tests: Factory → Create → Trade → Resolve → Claim → LP Withdraw
@@ -13,6 +14,7 @@ contract MarketLifecycleTest is Test {
     MarketFactory public factory;
     PositionNFT public positionNFT;
     MockUSDC public usdc;
+    Vault public vault;
     
     address admin = address(0x1);
     address creator = address(0x2);
@@ -47,16 +49,67 @@ contract MarketLifecycleTest is Test {
         
         // Verify factory address matches prediction
         require(address(factory) == predictedFactory, "Factory address mismatch");
-        
+
+        // Whitelist the market creator
+        factory.setCreatorAllowance(creator, 50);
+
+        // Deploy vault and wire up
+        vault = new Vault(address(usdc), "Vault", "sVLT", admin);
+        factory.setVault(address(vault));
+        vault.setFactory(address(factory));
+
+        vm.stopPrank();
+
+        // Fund vault via LP deposit
+        address lp = address(0x6);
+        usdc.mint(lp, 1_000_000_000000);
+        vm.startPrank(lp);
+        usdc.approve(address(vault), 1_000_000_000000);
+        vault.deposit(1_000_000_000000, lp);
         vm.stopPrank();
         
-        // Mint USDC to users
-        usdc.mint(creator, 50000_000000); // $50k
-        usdc.mint(alice, 10000_000000); // $10k
-        usdc.mint(bob, 10000_000000); // $10k
-        usdc.mint(charlie, 10000_000000); // $10k
+        // Mint USDC to traders (not to creator — vault funds markets)
+        usdc.mint(alice, 10000_000000);
+        usdc.mint(bob, 10000_000000);
+        usdc.mint(charlie, 10000_000000);
     }
     
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    function _params(
+        uint256 sa,
+        uint256[] memory br,
+        uint256 feeBps,
+        uint256 protoBps
+    ) internal pure returns (MarketFactory.MarketParams memory p) {
+        uint256 buckets = br.length - 1;
+        p.alpha        = sa / _isqrt(buckets);
+        p.seedAmount   = sa;
+        p.bucketRanges = br;
+        p.feeBps       = feeBps;
+        p.protocolFeeBps = protoBps;
+    }
+
+    function _isqrt(uint256 x) internal pure returns (uint256) {
+        if (x == 0) return 0;
+        if (x <= 3) return 1;
+        uint256 z = (x + 1) / 2;
+        uint256 y = x;
+        while (z < y) { y = z; z = (x / z + z) / 2; }
+        return y;
+    }
+
+    function _cm(
+        uint256 pb,
+        uint256[] memory br,
+        uint256 feeBps,
+        uint256 protoBps
+    ) internal returns (address) {
+        return factory.createMarket(_params(pb, br, feeBps, protoBps));
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
     /// @notice Test full lifecycle: Create → Trade → Resolve → Claim → Withdraw
     function test_fullLifecycle_bitcoinScenario() public {
         // === PHASE 1: Market Creation ===
@@ -65,16 +118,8 @@ contract MarketLifecycleTest is Test {
             bucketRanges[i] = i * 10; // 0, 10, 20, ..., 100
         }
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        
-        address marketAddress = factory.createMarket(
-            POOL_BALANCE,
-            bucketRanges,
-            50, // 0.5% trading fee
-            2000 // 20% protocol fee
-        );
-        vm.stopPrank();
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
         
         LMSRMarket market = LMSRMarket(marketAddress);
         uint256 marketId = market.marketId();
@@ -172,8 +217,9 @@ contract MarketLifecycleTest is Test {
         assertGt(market.feesCollectedProtocol(), 0, "Protocol should collect fees");
         
         // Verify final state: pool has exactly enough for remaining claims
+        // Shares are now in 6 decimals, payout = shares (both 6 decimals)
         uint256 remainingWinningShares = bucket7Shares - aliceShares;
-        uint256 expectedPoolBalance = remainingWinningShares / 1e12; // fromWad conversion
+        uint256 expectedPoolBalance = remainingWinningShares; // Direct conversion (both 6 decimals)
         assertApproxEqAbs(market.poolBalance(), expectedPoolBalance, 10, "Pool should have exact amount for remaining claims");
     }
     
@@ -185,13 +231,11 @@ contract MarketLifecycleTest is Test {
             bucketRanges[i] = i * 20; // 0, 20, 40, 60, 80, 100
         }
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
-        
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+
         LMSRMarket market = LMSRMarket(marketAddress);
-        
+
         // High volume trading from multiple users
         uint256 tradeAmount = 150_000000; // $150
         
@@ -245,19 +289,17 @@ contract MarketLifecycleTest is Test {
             bucketRanges[i] = i * 20;
         }
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
-        
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+
         LMSRMarket market = LMSRMarket(marketAddress);
-        
+
         // Minimal trading
         uint256 smallTradeAmount = 50_000000; // $50
         
         vm.startPrank(alice);
         usdc.approve(address(market), smallTradeAmount);
-        market.buyShares(0, smallTradeAmount, 0);
+        uint256 aliceShares = market.buyShares(0, smallTradeAmount, 0);
         vm.stopPrank();
         
         // Resolve to bucket 0 (Alice wins)
@@ -265,9 +307,8 @@ contract MarketLifecycleTest is Test {
         market.resolveMarket(0);
         
         // Alice claims all winnings
-        (uint256 winningShares,,) = market.buckets(0);
         vm.prank(alice);
-        market.claimWinnings(0, winningShares);
+        market.claimWinnings(0, aliceShares);
         
         // Check LP profitability
         (int256 profit, int256 roi,) = market.getLPProfitability();
@@ -286,13 +327,11 @@ contract MarketLifecycleTest is Test {
         bucketRanges[2] = 50;
         bucketRanges[3] = 100;
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
-        
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+
         LMSRMarket market = LMSRMarket(marketAddress);
-        
+
         // Track balances
         uint256 aliceInitial = usdc.balanceOf(alice);
         uint256 bobInitial = usdc.balanceOf(bob);
@@ -356,13 +395,11 @@ contract MarketLifecycleTest is Test {
         bucketRanges[2] = 66;
         bucketRanges[3] = 100;
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000); // 0.5% fee, 20% protocol
-        vm.stopPrank();
-        
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+
         LMSRMarket market = LMSRMarket(marketAddress);
-        
+
         // Execute trades
         uint256 totalTraded = 0;
         
@@ -400,13 +437,11 @@ contract MarketLifecycleTest is Test {
         bucketRanges[1] = 50;
         bucketRanges[2] = 100;
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000);
-        vm.stopPrank();
-        
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+
         LMSRMarket market = LMSRMarket(marketAddress);
-        
+
         // Trade and resolve
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT);
@@ -437,28 +472,25 @@ contract MarketLifecycleTest is Test {
         bucketRanges[2] = 66;
         bucketRanges[3] = 100;
         
-        vm.startPrank(creator);
-        usdc.approve(address(factory), POOL_BALANCE);
-        address marketAddress = factory.createMarket(POOL_BALANCE, bucketRanges, 50, 2000); // 0.5% fee, 20% protocol
-        vm.stopPrank();
-        
+        vm.prank(creator);
+        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+
         LMSRMarket market = LMSRMarket(marketAddress);
-        
+
         assertEq(market.totalVolume(), 0, "Initial volume should be 0");
         
         // Buy trades
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT * 2);
-        market.buyShares(0, TRADE_AMOUNT, 0);
+        uint256 aliceBucket0Shares = market.buyShares(0, TRADE_AMOUNT, 0);
         market.buyShares(1, TRADE_AMOUNT, 0);
         vm.stopPrank();
         
         assertEq(market.totalVolume(), TRADE_AMOUNT * 2, "Volume should track buys");
         
         // Sell trade
-        (uint256 bucket0Shares,,) = market.buckets(0);
         vm.prank(alice);
-        uint256 payout = market.sellShares(0, bucket0Shares / 2, 0);
+        uint256 payout = market.sellShares(0, aliceBucket0Shares / 2, 0);
         
         // Volume includes both buy and sell amounts
         assertGt(market.totalVolume(), TRADE_AMOUNT * 2, "Volume should include sells");

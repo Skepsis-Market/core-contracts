@@ -6,33 +6,35 @@ import {MarketFactory} from "../src/MarketFactory.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
 import {PositionNFT} from "../src/PositionNFT.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {Vault} from "../src/Vault.sol";
 
 contract MarketFactoryTest is Test {
     MarketFactory factory;
     PositionNFT positionNFT;
     MockUSDC usdc;
-    
-    address admin = address(0x1);
+    Vault vault;
+
+    address admin    = address(0x1);
     address creator1 = address(0x2);
     address creator2 = address(0x3);
-    
-    uint256 minPoolBalance = 100_000000; // $100
-    uint256 maxBuckets = 100;
-    uint256 defaultFeeBps = 50; // 0.5%
-    uint256 defaultProtocolFeeBps = 2000; // 20%
-    
+
+    uint256 minPoolBalance       = 100_000000; // $100
+    uint256 maxBuckets           = 100;
+    uint256 defaultFeeBps        = 50;         // 0.5%
+    uint256 defaultProtocolFeeBps = 2000;      // 20%
+
     function setUp() public {
         vm.startPrank(admin);
-        
+
         usdc = new MockUSDC();
-        
+
         // Compute the address where factory will be deployed
         // PositionNFT is next (nonce 1), then Factory (nonce 2)
         address predictedFactoryAddress = vm.computeCreateAddress(admin, 2);
-        
+
         // Deploy PositionNFT with predicted factory address
         positionNFT = new PositionNFT(predictedFactoryAddress);
-        
+
         // Now deploy factory (should match predicted address)
         factory = new MarketFactory(
             address(usdc),
@@ -42,273 +44,377 @@ contract MarketFactoryTest is Test {
             defaultFeeBps,
             defaultProtocolFeeBps
         );
-        
+
+        // Deploy vault and wire up
+        vault = new Vault(address(usdc), "Vault", "sVLT", admin);
+        factory.setVault(address(vault));
+        vault.setFactory(address(factory));
+
+        // Whitelist creators
+        factory.setCreatorAllowance(creator1, 10);
+        factory.setCreatorAllowance(creator2, 10);
+
+        vm.stopPrank();
+
+        // Fund vault via LP deposit (all market seeds come from vault)
+        address lp = address(0x4);
+        usdc.mint(lp, 1_000_000_000000);
+        vm.startPrank(lp);
+        usdc.approve(address(vault), 1_000_000_000000);
+        vault.deposit(1_000_000_000000, lp);
         vm.stopPrank();
     }
-    
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// @dev Build a MarketParams struct with default vault name/symbol
+    function _params(
+        uint256 sa,
+        uint256[] memory br,
+        uint256 feeBps,
+        uint256 protoBps
+    ) internal pure returns (MarketFactory.MarketParams memory p) {
+        uint256 buckets = br.length - 1;
+        p.alpha        = sa / _isqrt(buckets);
+        p.seedAmount   = sa;
+        p.bucketRanges = br;
+        p.feeBps       = feeBps;
+        p.protocolFeeBps = protoBps;
+    }
+
+    function _isqrt(uint256 x) internal pure returns (uint256) {
+        if (x == 0) return 0;
+        if (x <= 3) return 1;
+        uint256 z = (x + 1) / 2;
+        uint256 y = x;
+        while (z < y) { y = z; z = (x / z + z) / 2; }
+        return y;
+    }
+
+    /// @dev Convenience wrapper: build params + call createMarket, return market address only
+    function _cm(
+        uint256 pb,
+        uint256[] memory br,
+        uint256 feeBps,
+        uint256 protoBps
+    ) internal returns (address) {
+        return factory.createMarket(_params(pb, br, feeBps, protoBps));
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
     function test_createMarket_deploysSuccessfully() public {
         uint256 poolBalance = 1000_000000; // $1000
-        
+
         uint256[] memory bucketRanges = new uint256[](5);
         bucketRanges[0] = 0;
         bucketRanges[1] = 25;
         bucketRanges[2] = 50;
         bucketRanges[3] = 75;
         bucketRanges[4] = 100;
-        
-        // Mint USDC to creator and approve factory
-        usdc.mint(creator1, poolBalance);
-        
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        
+
+        usdc.mint(creator1, poolBalance); // creator no longer pays, but need for approve
+
+        vm.prank(creator1);
         address marketAddress = factory.createMarket(
-            poolBalance,
-            bucketRanges,
-            0, // use default fees
-            0  // use default protocol fees
+            _params(poolBalance, bucketRanges, 0, 0)
         );
-        vm.stopPrank();
-        
-        // Verify market was created
+
+        // Verify market
         assertTrue(marketAddress != address(0), "Market address should not be zero");
         assertTrue(factory.isValidMarket(marketAddress), "Market should be valid");
         assertEq(factory.marketCount(), 1, "Market count should be 1");
         assertEq(factory.marketById(0), marketAddress, "Market should be registered by ID");
-        
-        // Verify market received USDC
-        assertEq(usdc.balanceOf(marketAddress), poolBalance, "Market should have pool balance");
-        assertEq(usdc.balanceOf(creator1), 0, "Creator should have transferred USDC");
+        assertEq(usdc.balanceOf(marketAddress), poolBalance, "Market should have seed from vault");
     }
-    
+
+    function test_createMarket_revertsIfNotWhitelisted() public {
+        address stranger = address(0x999);
+        uint256 poolBalance = 1000_000000;
+
+        uint256[] memory bucketRanges = new uint256[](3);
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        usdc.mint(stranger, poolBalance);
+        vm.prank(stranger);
+        vm.expectRevert(MarketFactory.NotWhitelisted.selector);
+        factory.createMarket(_params(poolBalance, bucketRanges, 0, 0));
+    }
+
+    function test_createMarket_decrementsAllowance() public {
+        uint256 poolBalance = 1000_000000;
+        uint256[] memory bucketRanges = new uint256[](3);
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        assertEq(factory.creatorAllowance(creator1), 10);
+
+        usdc.mint(creator1, poolBalance);
+        vm.prank(creator1);
+        _cm(poolBalance, bucketRanges, 0, 0);
+
+        assertEq(factory.creatorAllowance(creator1), 9, "Allowance should decrement");
+    }
+
+    function test_createMarket_revertsWhenAllowanceExhausted() public {
+        // Give creator1 exactly 1 slot, use it, then fail
+        vm.prank(admin);
+        factory.setCreatorAllowance(creator1, 1);
+
+        uint256 poolBalance = 1000_000000;
+        uint256[] memory bucketRanges = new uint256[](3);
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        usdc.mint(creator1, poolBalance * 2);
+        vm.startPrank(creator1);
+        _cm(poolBalance, bucketRanges, 0, 0); // uses the 1 slot
+
+        vm.expectRevert(MarketFactory.NotWhitelisted.selector);
+        factory.createMarket(_params(poolBalance, bucketRanges, 0, 0));
+        vm.stopPrank();
+    }
+
     function test_createMarket_revertsInvalidParams() public {
         uint256[] memory bucketRanges = new uint256[](5);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 75;
-        bucketRanges[4] = 100;
-        
-        // Test: pool balance too low
+        bucketRanges[0] = 0; bucketRanges[1] = 25; bucketRanges[2] = 50;
+        bucketRanges[3] = 75; bucketRanges[4] = 100;
+
+        // Pool balance too low
         vm.prank(creator1);
         vm.expectRevert(MarketFactory.PoolBalanceTooLow.selector);
-        factory.createMarket(50_000000, bucketRanges, 0, 0); // $50 < $100 min
-        
-        // Test: too few buckets
+        factory.createMarket(_params(50_000000, bucketRanges, 0, 0)); // $50 < $100 min
+
+        // Too few buckets
         uint256[] memory tooFewBuckets = new uint256[](1);
         tooFewBuckets[0] = 0;
-        
-        usdc.mint(creator1, minPoolBalance);
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), minPoolBalance);
+
+        MarketFactory.MarketParams memory pFew;
+        pFew.alpha = 500_000000;
+        pFew.seedAmount = minPoolBalance;
+        pFew.bucketRanges = tooFewBuckets;
+
+        vm.prank(creator1);
         vm.expectRevert(MarketFactory.InvalidParameters.selector);
-        factory.createMarket(minPoolBalance, tooFewBuckets, 0, 0);
-        vm.stopPrank();
-        
-        // Test: non-increasing bucket ranges
+        factory.createMarket(pFew);
+
+        // Non-increasing bucket ranges
         uint256[] memory badRanges = new uint256[](5);
-        badRanges[0] = 0;
-        badRanges[1] = 25;
-        badRanges[2] = 25; // Same as previous
-        badRanges[3] = 75;
-        badRanges[4] = 100;
-        
-        vm.startPrank(creator1);
+        badRanges[0] = 0; badRanges[1] = 25; badRanges[2] = 25; // duplicate
+        badRanges[3] = 75; badRanges[4] = 100;
+
+        vm.prank(creator1);
         vm.expectRevert(MarketFactory.InvalidBucketRanges.selector);
-        factory.createMarket(minPoolBalance, badRanges, 0, 0);
-        vm.stopPrank();
+        factory.createMarket(_params(minPoolBalance, badRanges, 0, 0));
     }
-    
+
     function test_createMarket_transfersUSDC() public {
         uint256 poolBalance = 1000_000000;
-        
+
         uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-        
-        usdc.mint(creator1, poolBalance);
-        
-        uint256 balanceBefore = usdc.balanceOf(creator1);
-        
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        address marketAddress = factory.createMarket(poolBalance, bucketRanges, 0, 0);
-        vm.stopPrank();
-        
-        assertEq(usdc.balanceOf(creator1), balanceBefore - poolBalance, "Creator balance should decrease");
-        assertEq(usdc.balanceOf(marketAddress), poolBalance, "Market should receive USDC");
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        uint256 vaultBalBefore = usdc.balanceOf(address(vault));
+
+        vm.prank(creator1);
+        address marketAddress = _cm(poolBalance, bucketRanges, 0, 0);
+
+        assertEq(usdc.balanceOf(address(vault)), vaultBalBefore - poolBalance, "Vault balance should decrease");
+        assertEq(usdc.balanceOf(marketAddress), poolBalance, "Market should receive seed from vault");
     }
-    
+
     function test_createMarket_setsFeesCorrectly() public {
         uint256 poolBalance = 1000_000000;
-        
+
         uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-        
-        usdc.mint(creator1, poolBalance);
-        
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        usdc.mint(creator1, poolBalance * 2);
         vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        
-        // Test with default fees (0, 0)
-        address market1 = factory.createMarket(poolBalance, bucketRanges, 0, 0);
-        vm.stopPrank();
-        
-        LMSRMarket lmsrMarket1 = LMSRMarket(market1);
-        assertEq(lmsrMarket1.feeBps(), defaultFeeBps, "Should use default fee bps");
-        assertEq(lmsrMarket1.protocolFeeBps(), defaultProtocolFeeBps, "Should use default protocol fee bps");
-        
-        // Test with custom fees
-        uint256 customFeeBps = 100; // 1%
+
+        // Default fees (0, 0)
+        address market1 = _cm(poolBalance, bucketRanges, 0, 0);
+
+        // Custom fees
+        uint256 customFeeBps        = 100;  // 1%
         uint256 customProtocolFeeBps = 5000; // 50%
-        
-        usdc.mint(creator1, poolBalance);
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        address market2 = factory.createMarket(poolBalance, bucketRanges, customFeeBps, customProtocolFeeBps);
+        address market2 = _cm(poolBalance, bucketRanges, customFeeBps, customProtocolFeeBps);
         vm.stopPrank();
-        
-        LMSRMarket lmsrMarket2 = LMSRMarket(market2);
-        assertEq(lmsrMarket2.feeBps(), customFeeBps, "Should use custom fee bps");
-        assertEq(lmsrMarket2.protocolFeeBps(), customProtocolFeeBps, "Should use custom protocol fee bps");
+
+        assertEq(LMSRMarket(market1).feeBps(), defaultFeeBps, "Should use default fee bps");
+        assertEq(LMSRMarket(market1).protocolFeeBps(), defaultProtocolFeeBps, "Should use default protocol fee bps");
+        assertEq(LMSRMarket(market2).feeBps(), customFeeBps, "Should use custom fee bps");
+        assertEq(LMSRMarket(market2).protocolFeeBps(), customProtocolFeeBps, "Should use custom protocol fee bps");
     }
-    
+
     function test_createMarket_incrementsMarketCount() public {
         uint256 poolBalance = 1000_000000;
-        
+
         uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-        
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
         assertEq(factory.marketCount(), 0, "Initial count should be 0");
-        
-        // Create first market
+
         usdc.mint(creator1, poolBalance);
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        factory.createMarket(poolBalance, bucketRanges, 0, 0);
-        vm.stopPrank();
-        
+        vm.prank(creator1);
+        _cm(poolBalance, bucketRanges, 0, 0);
+
         assertEq(factory.marketCount(), 1, "Count should be 1 after first market");
-        
-        // Create second market
+
         usdc.mint(creator2, poolBalance);
-        vm.startPrank(creator2);
-        usdc.approve(address(factory), poolBalance);
-        factory.createMarket(poolBalance, bucketRanges, 0, 0);
-        vm.stopPrank();
-        
+        vm.prank(creator2);
+        _cm(poolBalance, bucketRanges, 0, 0);
+
         assertEq(factory.marketCount(), 2, "Count should be 2 after second market");
     }
-    
+
     function test_adminFunctions_onlyAdmin() public {
-        // Test setMinPoolBalance
-        vm.prank(creator1); // Not admin
+        // setMinPoolBalance
+        vm.prank(creator1);
         vm.expectRevert();
         factory.setMinPoolBalance(200_000000);
-        
+
         vm.prank(admin);
         factory.setMinPoolBalance(200_000000);
-        assertEq(factory.minPoolBalance(), 200_000000, "Admin should update min pool balance");
-        
-        // Test setMaxBuckets
+        assertEq(factory.minPoolBalance(), 200_000000);
+
+        // setMaxBuckets
         vm.prank(creator1);
         vm.expectRevert();
         factory.setMaxBuckets(50);
-        
+
         vm.prank(admin);
         factory.setMaxBuckets(50);
-        assertEq(factory.maxBuckets(), 50, "Admin should update max buckets");
-        
-        // Test setDefaultFeeBps
+        assertEq(factory.maxBuckets(), 50);
+
+        // setDefaultFeeBps
         vm.prank(creator1);
         vm.expectRevert();
         factory.setDefaultFeeBps(100);
-        
+
         vm.prank(admin);
         factory.setDefaultFeeBps(100);
-        assertEq(factory.defaultFeeBps(), 100, "Admin should update default fee bps");
-        
-        // Test setDefaultProtocolFeeBps
+        assertEq(factory.defaultFeeBps(), 100);
+
+        // setDefaultProtocolFeeBps
         vm.prank(creator1);
         vm.expectRevert();
         factory.setDefaultProtocolFeeBps(3000);
-        
+
         vm.prank(admin);
         factory.setDefaultProtocolFeeBps(3000);
-        assertEq(factory.defaultProtocolFeeBps(), 3000, "Admin should update default protocol fee bps");
+        assertEq(factory.defaultProtocolFeeBps(), 3000);
     }
-    
+
+    function test_setCreatorAllowance_onlyAdmin() public {
+        vm.prank(creator1);
+        vm.expectRevert();
+        factory.setCreatorAllowance(creator2, 5);
+
+        vm.prank(admin);
+        factory.setCreatorAllowance(creator2, 5);
+        assertEq(factory.creatorAllowance(creator2), 5);
+    }
+
+    function test_addCreatorAllowance_onlyAdmin() public {
+        vm.prank(admin);
+        factory.setCreatorAllowance(creator1, 3);
+
+        vm.prank(admin);
+        factory.addCreatorAllowance(creator1, 7);
+        assertEq(factory.creatorAllowance(creator1), 10);
+    }
+
     function test_pauseMarket_preventsTrading() public {
         uint256 poolBalance = 1000_000000;
-        
+
         uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-        
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
         usdc.mint(creator1, poolBalance);
-        
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        address marketAddress = factory.createMarket(poolBalance, bucketRanges, 0, 0);
-        vm.stopPrank();
-        
+
+        vm.prank(creator1);
+        address marketAddress = _cm(poolBalance, bucketRanges, 0, 0);
+
         // Non-admin cannot pause
         vm.prank(creator1);
         vm.expectRevert();
         factory.pauseMarket(0);
-        
-        // Admin can pause (emits event only for now)
+
+        // Admin can pause (emits event)
         vm.prank(admin);
         vm.expectEmit(true, true, false, false);
         emit MarketFactory.MarketPaused(0, marketAddress);
         factory.pauseMarket(0);
     }
-    
+
     function test_multipleMarkets_independentState() public {
         uint256 poolBalance = 1000_000000;
-        
+
         uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-        
-        // Create market 1
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
         usdc.mint(creator1, poolBalance);
-        vm.startPrank(creator1);
-        usdc.approve(address(factory), poolBalance);
-        address market1 = factory.createMarket(poolBalance, bucketRanges, 50, 2000);
-        vm.stopPrank();
-        
-        // Create market 2 with different parameters
+        vm.prank(creator1);
+        address market1 = _cm(poolBalance, bucketRanges, 50, 2000);
+
         usdc.mint(creator2, poolBalance * 2);
-        vm.startPrank(creator2);
-        usdc.approve(address(factory), poolBalance * 2);
-        address market2 = factory.createMarket(poolBalance * 2, bucketRanges, 100, 3000);
-        vm.stopPrank();
-        
-        // Verify markets are different
-        assertTrue(market1 != market2, "Markets should have different addresses");
-        
-        // Verify market 1 properties
-        LMSRMarket lmsrMarket1 = LMSRMarket(market1);
-        assertEq(lmsrMarket1.creator(), creator1, "Market 1 creator should be creator1");
-        assertEq(lmsrMarket1.poolBalance(), poolBalance, "Market 1 pool balance");
-        assertEq(lmsrMarket1.feeBps(), 50, "Market 1 fee bps");
-        
-        // Verify market 2 properties
-        LMSRMarket lmsrMarket2 = LMSRMarket(market2);
-        assertEq(lmsrMarket2.creator(), creator2, "Market 2 creator should be creator2");
-        assertEq(lmsrMarket2.poolBalance(), poolBalance * 2, "Market 2 pool balance");
-        assertEq(lmsrMarket2.feeBps(), 100, "Market 2 fee bps");
-        
-        // Verify both are registered
-        assertTrue(factory.isValidMarket(market1), "Market 1 should be valid");
-        assertTrue(factory.isValidMarket(market2), "Market 2 should be valid");
+        vm.prank(creator2);
+        address market2 = _cm(poolBalance * 2, bucketRanges, 100, 3000);
+
+        assertTrue(market1 != market2);
+
+        assertEq(LMSRMarket(market1).creator(), creator1);
+        assertEq(LMSRMarket(market1).poolBalance(), poolBalance);
+        assertEq(LMSRMarket(market1).feeBps(), 50);
+
+        assertEq(LMSRMarket(market2).creator(), creator2);
+        assertEq(LMSRMarket(market2).poolBalance(), poolBalance * 2);
+        assertEq(LMSRMarket(market2).feeBps(), 100);
+
+        assertTrue(factory.isValidMarket(market1));
+        assertTrue(factory.isValidMarket(market2));
+    }
+
+    function test_createMarket_deploysAndRegistersMarket() public {
+        uint256 poolBalance = 1000_000000;
+
+        uint256[] memory bucketRanges = new uint256[](3);
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        usdc.mint(creator1, poolBalance);
+        vm.prank(creator1);
+
+        address marketAddress = factory.createMarket(_params(poolBalance, bucketRanges, 0, 0));
+
+        assertTrue(factory.isValidMarket(marketAddress), "Market should be valid");
+        assertEq(factory.marketById(0), marketAddress, "Market should be registered by ID");
+        assertEq(LMSRMarket(marketAddress).creator(), creator1, "Creator should be set");
+    }
+
+    function test_createMarket_withAlphaDecay() public {
+        // 2 buckets: sqrt(2)=1, so alphaInitial = poolBalance = 1_000_000000 (6 dec)
+        // 10% floor  = 100_000000; use 500_000000 as alphaFinal (50%)
+        uint256 poolBalance = 1000_000000;
+
+        uint256[] memory bucketRanges = new uint256[](3);
+        bucketRanges[0] = 0; bucketRanges[1] = 50; bucketRanges[2] = 100;
+
+        // ── Case 1: no decay params → isAlphaDecayConfigured() == false ─────────
+        vm.prank(creator1);
+        address mktNoDecay = factory.createMarket(_params(poolBalance, bucketRanges, 0, 0));
+
+        assertFalse(LMSRMarket(mktNoDecay).isAlphaDecayConfigured(), "No decay params = no decay");
+
+        // ── Case 2: decay params provided → isAlphaDecayConfigured() == true ────
+        MarketFactory.MarketParams memory p = _params(poolBalance, bucketRanges, 0, 0);
+        p.decayDuration = 7 days;
+        p.decayStart    = block.timestamp;
+        p.alphaFinal    = 500_000000; // 50% of alphaInitial — safely above 10% floor
+
+        vm.prank(creator1);
+        address mktDecay = factory.createMarket(p);
+
+        assertTrue(LMSRMarket(mktDecay).isAlphaDecayConfigured(), "Decay params provided = configured");
+        assertEq(LMSRMarket(mktDecay).alphaFinal(), 500_000000, "alphaFinal set correctly");
+        assertEq(LMSRMarket(mktDecay).decayDuration(), 7 days, "decayDuration set correctly");
     }
 }

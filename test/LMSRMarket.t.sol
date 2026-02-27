@@ -19,7 +19,7 @@ contract LMSRMarketTest is Test {
     address user1 = address(0x456);
     
     uint256 marketId = 1;
-    uint256 alpha = 100e18;
+    uint256 alpha = 500_000000;
     uint256 poolBalance = 1000_000000;
     uint256 feeBps = 50;
     uint256 protocolFeeBps = 2000;
@@ -58,10 +58,10 @@ contract LMSRMarketTest is Test {
         assertEq(address(market.usdcToken()), address(usdc));
         assertEq(market.positionNFT(), positionNFT);
         
-        uint256 calculatedAlpha = poolBalance.toWad().divWad(
-            market.SPREAD_FACTOR().mulWad((uint256(4)).fromU256().ln())
-        );
-        assertEq(market.alpha(), calculatedAlpha, "Alpha should match dynamic calculation");
+        // Alpha formula matches Sui: alpha = pool / sqrt(n)
+        // For 4 buckets: sqrt(4) = 2, so alpha = poolBalance / 2
+        uint256 expectedAlpha = poolBalance / 2; // sqrt(4) = 2
+        assertEq(market.alpha(), expectedAlpha, "Alpha should match sqrt(n) calculation");
         
         assertEq(market.poolBalance(), poolBalance);
         assertEq(market.initialDeposit(), poolBalance);
@@ -110,7 +110,8 @@ contract LMSRMarketTest is Test {
     }
 
     function test_initialState_uniformDistribution() public view {
-        uint256 expectedShares = poolBalance.toWad() / 4;
+        // Shares are now in 6 decimals, not WAD
+        uint256 expectedShares = poolBalance / 4; // 6 decimals
         for (uint256 i = 0; i < 4; i++) {
             LMSRMarket.Bucket memory bucket = market.getBucket(i);
             assertEq(bucket.shares, expectedShares);
@@ -173,7 +174,9 @@ contract LMSRMarketTest is Test {
         
         assertEq(sharesMinted, expectedShares);
         LMSRMarket.Bucket memory bucket = market.getBucket(0);
-        assertEq(bucket.shares, poolBalance.toWad() / 4 + sharesMinted);
+        // Shares are now in 6 decimals, not WAD
+        uint256 initialShares = poolBalance / 4; // 6 decimals
+        assertEq(bucket.shares, initialShares + sharesMinted);
     }
 
     function test_buyShares_updatesPoolBalance() public {
@@ -438,8 +441,8 @@ contract LMSRMarketTest is Test {
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
         uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
-        console.log("sharesMinted:", sharesMinted);
-        console.log("sharesMinted in USDC units:", sharesMinted.fromWad());
+        console.log("sharesMinted (6 dec):", sharesMinted);
+        console.log("sharesMinted in USDC units:", sharesMinted / 1e6);
         vm.stopPrank();
         
         // Creator resolves to bucket 2
@@ -457,8 +460,9 @@ contract LMSRMarketTest is Test {
         console.log("balanceAfter:", balanceAfter);
         console.log("payout:", payout);
         
-        // Should receive exactly $1 per share (fromWad conversion)
-        uint256 expectedPayout = sharesMinted.fromWad();
+        // Should receive exactly $1 per share - shares and USDC both in 6 decimals
+        // So payout = shares (both 6 decimals)
+        uint256 expectedPayout = sharesMinted; // Both 6 decimals now
         console.log("expectedPayout:", expectedPayout);
         assertEq(payout, expectedPayout, "Should pay $1 per winning share");
     }
@@ -499,7 +503,8 @@ contract LMSRMarketTest is Test {
         market.claimWinnings(bucketId, sharesMinted);
         
         uint256 poolAfter = market.poolBalance();
-        uint256 expectedDecrease = sharesMinted.fromWad();
+        // Shares are in 6 decimals, payout = shares (both 6 decimals)
+        uint256 expectedDecrease = sharesMinted;
         
         assertEq(poolBefore - poolAfter, expectedDecrease, "Pool should decrease by payout amount");
     }
@@ -525,10 +530,11 @@ contract LMSRMarketTest is Test {
         vm.prank(creator);
         market.resolveMarket(bucketId);
         
-        // Get winning shares
+        // Get winning shares - now in 6 decimals
         LMSRMarket.Bucket memory winningBucket = market.getBucket(bucketId);
         uint256 winningShares = winningBucket.shares;
-        uint256 expectedPayouts = winningShares.fromWad();
+        // Shares are 6 decimals, payout = shares (both 6 decimals)
+        uint256 expectedPayouts = winningShares;
         uint256 expectedLP = poolBeforeResolution - expectedPayouts;
         
         // LP withdraws
