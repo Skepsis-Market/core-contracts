@@ -69,15 +69,18 @@ contract GasBenchmarkTest is Test {
     // ── Helper ──────────────────────────────────────────────────────────────
 
     function _params(
-        uint256 sa,
-        uint256[] memory br,
+        uint256 seedAmount,
+        uint256 minValue,
+        uint256 maxValue,
+        uint256 bucketCount,
         uint256 feeBps,
         uint256 protoBps
     ) internal pure returns (MarketFactory.MarketParams memory p) {
-        uint256 buckets = br.length - 1;
-        p.alpha        = sa / _isqrt(buckets);
-        p.seedAmount   = sa;
-        p.bucketRanges = br;
+        p.alpha        = seedAmount / _isqrt(bucketCount);
+        p.seedAmount   = seedAmount;
+        p.minValue     = minValue;
+        p.maxValue     = maxValue;
+        p.bucketCount  = bucketCount;
         p.feeBps       = feeBps;
         p.protocolFeeBps = protoBps;
     }
@@ -93,35 +96,20 @@ contract GasBenchmarkTest is Test {
 
     /// @notice Benchmark: Create market with 10 buckets
     function testGas_createMarket_10buckets() public {
-        uint256[] memory bucketRanges = new uint256[](11);
-        for (uint256 i = 0; i <= 10; i++) {
-            bucketRanges[i] = i * 10;
-        }
-        
         vm.prank(creator);
-        factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
+        factory.createMarket(_params(POOL_BALANCE, 0, 100, 10, 50, 2000));
     }
 
     /// @notice Benchmark: Create market with 50 buckets
     function testGas_createMarket_50buckets() public {
-        uint256[] memory bucketRanges = new uint256[](51);
-        for (uint256 i = 0; i <= 50; i++) {
-            bucketRanges[i] = i * 2;
-        }
-
         vm.prank(creator);
-        factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
+        factory.createMarket(_params(POOL_BALANCE, 0, 100, 50, 50, 2000));
     }
 
     /// @notice Benchmark: Create market with 100 buckets
     function testGas_createMarket_100buckets() public {
-        uint256[] memory bucketRanges = new uint256[](101);
-        for (uint256 i = 0; i <= 100; i++) {
-            bucketRanges[i] = i;
-        }
-
         vm.prank(creator);
-        factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
+        factory.createMarket(_params(POOL_BALANCE, 0, 100, 100, 50, 2000));
     }
     
     /// @notice Benchmark: Buy shares in 10-bucket market
@@ -339,13 +327,9 @@ contract GasBenchmarkTest is Test {
     
     /// @notice Helper: Create market with N buckets
     function _createMarket(uint256 numBuckets) internal returns (LMSRMarket) {
-        uint256[] memory bucketRanges = new uint256[](numBuckets + 1);
-        for (uint256 i = 0; i <= numBuckets; i++) {
-            bucketRanges[i] = (i * 100) / numBuckets;
-        }
-
+        // maxValue = numBuckets ensures each bucket is width 1 (evenly divisible)
         vm.prank(creator);
-        address marketAddress = factory.createMarket(_params(POOL_BALANCE, bucketRanges, 50, 2000));
+        address marketAddress = factory.createMarket(_params(POOL_BALANCE, 0, numBuckets, numBuckets, 50, 2000));
 
         return LMSRMarket(marketAddress);
     }

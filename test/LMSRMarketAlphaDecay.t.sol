@@ -14,6 +14,19 @@ contract LMSRMarketAlphaDecayTest is Test {
     address positionNFT = address(0x2);
     address trader = address(0x123);
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     uint256 marketId = 1;
     uint256 alphaParam = 500_000000;
     uint256 poolBalance = 1000_000000;
@@ -40,7 +53,8 @@ contract LMSRMarketAlphaDecayTest is Test {
             poolBalance,
             bucketRanges,
             feeBps,
-            protocolFeeBps
+            protocolFeeBps,
+            _defaultMetadata()
         );
 
         usdc.mint(address(market), poolBalance);

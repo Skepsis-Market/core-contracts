@@ -21,6 +21,19 @@ contract RoundTripEconomics2BucketTest is Test {
     uint256 internal constant FEE_BPS = 100; // 1%
     uint256 internal constant PROTOCOL_FEE_BPS = 2000; // 20% of fee (0.2% of gross)
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     struct Snapshot {
         uint256 userUsdc;
         uint256 pool;
@@ -48,7 +61,8 @@ contract RoundTripEconomics2BucketTest is Test {
             INITIAL_LIQUIDITY,
             ranges,
             FEE_BPS,
-            PROTOCOL_FEE_BPS
+            PROTOCOL_FEE_BPS,
+            _defaultMetadata()
         );
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);

@@ -130,6 +130,19 @@ contract SolvencyInvariantTest is StdInvariant, Test {
     
     uint256 constant POOL_BALANCE = 10000_000000; // $10,000
     uint256 constant SOLVENCY_DUST = 1000; // From LMSRMarket
+
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
     
     function setUp() public {
         // Deploy USDC
@@ -157,7 +170,8 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             POOL_BALANCE,
             bucketRanges,
             50, // 0.5% fee
-            2000 // 20% protocol fee
+            2000, // 20% protocol fee
+            _defaultMetadata()
         );
         
         // Mint initial pool balance to market

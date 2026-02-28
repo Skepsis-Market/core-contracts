@@ -22,6 +22,19 @@ contract CompareWithSuiTest is Test {
     uint256 constant POOL_BALANCE = 10000_000000; // $10,000 (matches Sui)
     uint256 constant TRADE_AMOUNT = 10_000000; // $10 (matches Sui)
     uint256 constant FEE_BPS = 50; // 0.5%
+
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
     
     function setUp() public {
         usdc = new MockUSDC();
@@ -42,7 +55,8 @@ contract CompareWithSuiTest is Test {
             POOL_BALANCE,
             bucketRanges,
             FEE_BPS,
-            2000
+            2000,
+            _defaultMetadata()
         );
         
         usdc.mint(address(market), POOL_BALANCE);

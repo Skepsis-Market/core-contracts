@@ -16,6 +16,19 @@ contract LMSRMarketPositionAccountingTest is Test {
     address internal buyer = address(0x123);
     address internal attacker = address(0xBEEF);
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
         positionNFT = new PositionNFT(address(this));
@@ -37,7 +50,8 @@ contract LMSRMarketPositionAccountingTest is Test {
             1000_000000,
             bucketRanges,
             50,
-            2000
+            2000,
+            _defaultMetadata()
         );
 
         positionNFT.authorizeMarket(address(market), MARKET_ID);

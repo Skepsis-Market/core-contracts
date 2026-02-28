@@ -24,9 +24,10 @@ contract PositionNFTTest is Test {
     
     function test_encodeTokenId_handlesLargeIds() public {
         uint256 marketId = type(uint128).max;
-        uint256 bucketId = type(uint128).max;
+        uint64 rangeLower = type(uint64).max;
+        uint64 rangeUpper = type(uint64).max;
         
-        uint256 tokenId = nft.encodeTokenId(marketId, bucketId);
+        uint256 tokenId = nft.encodeTokenId(marketId, rangeLower, rangeUpper);
         
         // Should not revert and encode correctly
         assertEq(tokenId, type(uint256).max, "Should encode max values correctly");
@@ -34,22 +35,25 @@ contract PositionNFTTest is Test {
     
     function test_decodeTokenId_recoversOriginal() public {
         uint256 originalMarketId = 42;
-        uint256 originalBucketId = 7;
+        uint64 originalRangeLower = 7;
+        uint64 originalRangeUpper = 10;
         
-        uint256 tokenId = nft.encodeTokenId(originalMarketId, originalBucketId);
-        (uint256 recoveredMarketId, uint256 recoveredBucketId) = nft.decodeTokenId(tokenId);
+        uint256 tokenId = nft.encodeTokenId(originalMarketId, originalRangeLower, originalRangeUpper);
+        (uint256 recoveredMarketId, uint256 recoveredRangeLower, uint256 recoveredRangeUpper) = nft.decodeTokenId(tokenId);
         
         assertEq(recoveredMarketId, originalMarketId, "Market ID should match");
-        assertEq(recoveredBucketId, originalBucketId, "Bucket ID should match");
+        assertEq(recoveredRangeLower, originalRangeLower, "Range lower should match");
+        assertEq(recoveredRangeUpper, originalRangeUpper, "Range upper should match");
     }
     
     function test_decodeTokenId_handlesEdgeCases() public {
         // Test with max values
         uint256 tokenId = type(uint256).max;
-        (uint256 marketId, uint256 bucketId) = nft.decodeTokenId(tokenId);
+        (uint256 marketId, uint256 rangeLower, uint256 rangeUpper) = nft.decodeTokenId(tokenId);
         
         assertEq(marketId, type(uint128).max, "Should decode max market ID");
-        assertEq(bucketId, type(uint128).max, "Should decode max bucket ID");
+        assertEq(rangeLower, type(uint64).max, "Should decode max range lower");
+        assertEq(rangeUpper, type(uint64).max, "Should decode max range upper");
     }
     
     function test_mint_onlyMarket() public {
@@ -57,7 +61,7 @@ contract PositionNFTTest is Test {
         vm.prank(factory);
         nft.authorizeMarket(market1, marketId1);
         
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         uint256 amount = 100e18;
         
         vm.prank(market1);
@@ -67,7 +71,7 @@ contract PositionNFTTest is Test {
     }
     
     function test_mint_revertsIfNotMarket() public {
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         uint256 amount = 100e18;
         
         // Try to mint without authorization
@@ -81,7 +85,7 @@ contract PositionNFTTest is Test {
         vm.prank(factory);
         nft.authorizeMarket(market1, marketId1);
         
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         uint256 amount = 100e18;
         
         vm.prank(market1);
@@ -99,7 +103,7 @@ contract PositionNFTTest is Test {
         vm.prank(factory);
         nft.authorizeMarket(market1, marketId1);
         
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         uint256 amount = 100e18;
         
         vm.prank(market1);
@@ -116,7 +120,7 @@ contract PositionNFTTest is Test {
         vm.prank(factory);
         nft.authorizeMarket(market1, marketId1);
         
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         uint256 amount = 100e18;
         
         vm.prank(market1);
@@ -135,7 +139,7 @@ contract PositionNFTTest is Test {
         vm.prank(factory);
         nft.setCID(marketId1, cid1);
         
-        uint256 tokenId = nft.encodeTokenId(marketId1, 3); // Bucket 3
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 3); // Bucket 3
         string memory tokenURI = nft.uri(tokenId);
         
         // Should start with ipfs://
@@ -162,7 +166,7 @@ contract PositionNFTTest is Test {
         vm.prank(factory);
         nft.authorizeMarket(market1, marketId1);
         
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         
         // Initial balance should be 0
         assertEq(nft.balanceOf(user1, tokenId), 0, "Initial balance should be 0");
@@ -201,7 +205,7 @@ contract PositionNFTTest is Test {
         nft.setCID(marketId1, cid1);
         
         // Verify CID was set by checking URI
-        uint256 tokenId = nft.encodeTokenId(marketId1, 0);
+        uint256 tokenId = nft.encodeTokenIdSingle(marketId1, 0);
         string memory uri = nft.uri(tokenId);
         assertTrue(bytes(uri).length > 0, "URI should be set");
         
@@ -221,7 +225,7 @@ contract PositionNFTTest is Test {
         uint256[] memory amounts = new uint256[](3);
         
         for (uint256 i = 0; i < 3; i++) {
-            tokenIds[i] = nft.encodeTokenId(marketId1, i);
+            tokenIds[i] = nft.encodeTokenIdSingle(marketId1, i);
             amounts[i] = 100e18 * (i + 1);
             
             vm.prank(market1);

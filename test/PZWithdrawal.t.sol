@@ -15,6 +15,19 @@ contract PZWithdrawalTest is Test {
     address attacker = address(0xBEEF);
     address vault = address(0xA11CE);
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
@@ -35,7 +48,8 @@ contract PZWithdrawalTest is Test {
             1000_000000,
             bucketRanges,
             50,
-            2000
+            2000,
+            _defaultMetadata()
         );
 
         usdc.mint(address(market), 1000_000000);

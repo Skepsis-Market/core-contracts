@@ -63,6 +63,19 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
     address creator = address(0x1);
     address[] traders;
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
         positionNFT = new PositionNFT(address(this));
@@ -82,7 +95,8 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
             10000_000000,
             bucketRanges,
             50,
-            2000
+            2000,
+            _defaultMetadata()
         );
 
         positionNFT.authorizeMarket(address(market), 1);

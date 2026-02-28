@@ -80,6 +80,17 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public feesCollectedProtocol;
     uint256 public maxLiability;
 
+    // Market metadata (Sui parity)
+    string public name;                    // Market question/title
+    string public description;             // Detailed description  
+    string public resolutionCriteria;      // How the market will be resolved
+    string public valueUnit;               // Unit label (e.g., "USD", "°C")
+    address public resolver;               // Who can resolve (if different from creator)
+    uint256 public biddingDeadline;        // Betting close time (0 = no deadline)
+    uint256 public scheduledResolutionTime; // When resolution is expected
+    uint256 public minBetSize;             // Minimum trade size in USDC
+    uint256 public creationTime;           // Block timestamp when created
+
     // Sui-style sparse cache: O(k) instead of O(n)
     uint256 private cachedSumExp;           // Σ exp(q_i/α) for all buckets
     mapping(uint256 => uint256) private cachedBucketExp;  // exp(q_i/α) per bucket
@@ -190,6 +201,20 @@ contract LMSRMarket is ReentrancyGuard {
     error InvalidRange();
     error RangeNotWinner();
     error NoSurplusAvailable();
+    error BiddingClosed();      // Betting deadline has passed
+    error BetTooSmall();        // Below minimum bet size
+
+    /// @notice Market metadata for initialization (packed to avoid stack too deep)
+    struct MarketMetadata {
+        string name;
+        string description;
+        string resolutionCriteria;
+        string valueUnit;
+        address resolver;
+        uint256 biddingDeadline;
+        uint256 scheduledResolutionTime;
+        uint256 minBetSize;
+    }
 
     constructor(
         uint256 _marketId,
@@ -201,7 +226,8 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 _poolBalance,
         uint256[] memory _bucketRanges,
         uint256 _feeBps,
-        uint256 _protocolFeeBps
+        uint256 _protocolFeeBps,
+        MarketMetadata memory _metadata
     ) {
         if (_alpha == 0) revert InvalidParameters();
         if (_poolBalance == 0) revert InvalidParameters();
@@ -219,6 +245,17 @@ contract LMSRMarket is ReentrancyGuard {
         feeBps = _feeBps;
         protocolFeeBps = _protocolFeeBps;
         status = MarketStatus.ACTIVE;
+
+        // Store metadata (Sui parity)
+        name = _metadata.name;
+        description = _metadata.description;
+        resolutionCriteria = _metadata.resolutionCriteria;
+        valueUnit = _metadata.valueUnit;
+        resolver = _metadata.resolver == address(0) ? _creator : _metadata.resolver;
+        biddingDeadline = _metadata.biddingDeadline;
+        scheduledResolutionTime = _metadata.scheduledResolutionTime;
+        minBetSize = _metadata.minBetSize;
+        creationTime = block.timestamp;
 
         bucketCount = _bucketRanges.length - 1;
 
@@ -425,8 +462,16 @@ contract LMSRMarket is ReentrancyGuard {
         }
     }
 
+    /// @notice Encode token ID for a single bucket (rangeLower = rangeUpper = bucketId)
+    /// @dev Matches PositionNFT.encodeTokenIdSingle format: (marketId << 128) | (bucketId << 64) | bucketId
     function _tokenIdForBucket(uint256 bucketId) internal view returns (uint256) {
-        return (uint256(uint128(marketId)) << 128) | uint256(uint128(bucketId));
+        return (uint256(uint128(marketId)) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
+    }
+
+    /// @notice Encode token ID for a range of buckets
+    /// @dev Matches PositionNFT.encodeTokenId format: (marketId << 128) | (rangeLower << 64) | rangeUpper
+    function _tokenIdForRange(uint256 rangeLower, uint256 rangeUpper) internal view returns (uint256) {
+        return (uint256(uint128(marketId)) << 128) | (uint256(uint64(rangeLower)) << 64) | uint256(uint64(rangeUpper));
     }
 
     /// @notice Get sumOther using sparse cache: O(1) instead of O(n)
@@ -546,6 +591,8 @@ contract LMSRMarket is ReentrancyGuard {
 
         if (bucketId >= bucketCount) revert InvalidBucket();
         if (amountUSDC == 0) revert InvalidParameters();
+        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
+        if (minBetSize != 0 && amountUSDC < minBetSize) revert BetTooSmall();
         
         uint256 C_before = _calculateCostFunction(); // 6 decimals
         
@@ -717,6 +764,8 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 minSharesOut
     ) external nonReentrant onlyActive returns (uint256 shares) {
         _syncAlpha();
+        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
+        if (minBetSize != 0 && amountUSDC < minBetSize) revert BetTooSmall();
 
         // ─────────────────────────────────────────────────────────────────────
         // STEP 1: Validate and convert range to buckets (ONCE)
@@ -763,9 +812,8 @@ contract LMSRMarket is ReentrancyGuard {
         _routeProtocolFee(protocolFee);
 
         if (_positionTokenEnabled()) {
-            for (uint256 b = startBucket; b <= endBucket; b++) {
-                IPositionNFT(positionNFT).mint(msg.sender, _tokenIdForBucket(b), shares);
-            }
+            // Mint ONE unified range token (not per-bucket)
+            IPositionNFT(positionNFT).mint(msg.sender, _tokenIdForRange(startBucket, endBucket), shares);
         }
         
         emit RangeSharesPurchased(marketId, msg.sender, startBucket, endBucket, shares, actualCost);
@@ -784,6 +832,7 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 minUsdcOut
     ) external nonReentrant onlyActive returns (uint256 payoutUSDC) {
         _syncAlpha();
+        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
 
         if (sharesToSell == 0) revert InvalidParameters();
         
@@ -793,18 +842,16 @@ contract LMSRMarket is ReentrancyGuard {
         (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
         
         // ─────────────────────────────────────────────────────────────────────
-        // STEP 2: Validate user has shares in ALL buckets of range
+        // STEP 2: Validate user has range position token
         // ─────────────────────────────────────────────────────────────────────
         for (uint256 b = startBucket; b <= endBucket; b++) {
             if (buckets[b].shares < sharesToSell) revert InsufficientBalance();
         }
 
         if (_positionTokenEnabled()) {
-            for (uint256 b = startBucket; b <= endBucket; b++) {
-                uint256 tokenId = _tokenIdForBucket(b);
-                if (IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId) < sharesToSell) {
-                    revert InsufficientBalance();
-                }
+            uint256 rangeTokenId = _tokenIdForRange(startBucket, endBucket);
+            if (IPositionNFT(positionNFT).balanceOf(msg.sender, rangeTokenId) < sharesToSell) {
+                revert InsufficientBalance();
             }
         }
         
@@ -838,9 +885,8 @@ contract LMSRMarket is ReentrancyGuard {
         // STEP 5: External interaction LAST
         // ─────────────────────────────────────────────────────────────────────
         if (_positionTokenEnabled()) {
-            for (uint256 b = startBucket; b <= endBucket; b++) {
-                IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForBucket(b), sharesToSell);
-            }
+            // Burn ONE unified range token  
+            IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(startBucket, endBucket), sharesToSell);
         }
 
         _routeProtocolFee(protocolFee);
@@ -873,8 +919,8 @@ contract LMSRMarket is ReentrancyGuard {
         
         if (sharesToClaim > buckets[winningBucket].shares) revert InsufficientBalance();
         if (_positionTokenEnabled()) {
-            uint256 tokenId = _tokenIdForBucket(winningBucket);
-            if (IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId) < sharesToClaim) {
+            uint256 rangeTokenId = _tokenIdForRange(startBucket, endBucket);
+            if (IPositionNFT(positionNFT).balanceOf(msg.sender, rangeTokenId) < sharesToClaim) {
                 revert InsufficientBalance();
             }
         }
@@ -887,7 +933,8 @@ contract LMSRMarket is ReentrancyGuard {
         poolBalance -= payoutUSDC;
 
         if (_positionTokenEnabled()) {
-            IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForBucket(winningBucket), sharesToClaim);
+            // Burn the unified range token
+            IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(startBucket, endBucket), sharesToClaim);
         }
         
         usdcToken.transfer(msg.sender, payoutUSDC);
@@ -1223,6 +1270,7 @@ contract LMSRMarket is ReentrancyGuard {
         if (bucketId >= bucketCount) revert InvalidBucket();
         if (sharesToSell == 0) revert InvalidParameters();
         if (sharesToSell > buckets[bucketId].shares) revert InsufficientBalance();
+        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
 
         if (_positionTokenEnabled()) {
             uint256 tokenId = _tokenIdForBucket(bucketId);
@@ -1284,7 +1332,7 @@ contract LMSRMarket is ReentrancyGuard {
     /// @notice Resolve market with winning outcome (admin only)
     /// @param _winningBucket The bucket ID that won
     function resolveMarket(uint256 _winningBucket) external {
-        if (msg.sender != creator) revert Unauthorized();
+        if (msg.sender != resolver) revert Unauthorized();
         if (status != MarketStatus.ACTIVE) revert MarketAlreadyResolved();
         if (_winningBucket >= bucketCount) revert InvalidBucket();
 

@@ -92,18 +92,10 @@ contract DeployScript is Script {
         // Step 5: Create a test market (Bitcoin price on Feb 1, 2026)
         console.log("\n5. Creating test market: Bitcoin price on Feb 1, 2026...");
         
-        uint256[] memory bucketRanges = new uint256[](11);
-        bucketRanges[0] = 40_000; // < $40k
-        bucketRanges[1] = 50_000;
-        bucketRanges[2] = 60_000;
-        bucketRanges[3] = 70_000;
-        bucketRanges[4] = 80_000;
-        bucketRanges[5] = 90_000;
-        bucketRanges[6] = 100_000;
-        bucketRanges[7] = 110_000;
-        bucketRanges[8] = 120_000;
-        bucketRanges[9] = 130_000;
-        bucketRanges[10] = 140_000; // > $140k
+        // Bitcoin price range: $40k to $140k, 10 buckets (using Sui-parity params)
+        uint256 minValue = 40_000;
+        uint256 maxValue = 140_000;
+        uint256 bucketCount = 10;
         
         uint256 poolBalance = 10_000_000000; // $10,000 USDC
 
@@ -113,7 +105,9 @@ contract DeployScript is Script {
         MarketFactory.MarketParams memory p;
         p.alpha          = poolBalance / 3; // sqrt(10) = 3
         p.seedAmount     = poolBalance;
-        p.bucketRanges   = bucketRanges;
+        p.minValue       = minValue;
+        p.maxValue       = maxValue;
+        p.bucketCount    = bucketCount;
         p.feeBps         = DEFAULT_FEE_BPS;
         p.protocolFeeBps = PROTOCOL_FEE_BPS;
 

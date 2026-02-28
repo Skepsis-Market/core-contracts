@@ -27,6 +27,19 @@ contract BenchmarkTwoBucketDecayTest is Test {
     uint256 internal constant ONE_SHARE = 1_000000; // 1 share in 6 decimals
     uint256 internal constant ONE_PERCENT_WAD = 0.01e18;
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
@@ -45,7 +58,8 @@ contract BenchmarkTwoBucketDecayTest is Test {
             INITIAL_LIQUIDITY,
             ranges,
             0, // feeBps = 0 for pure math benchmark
-            0  // protocolFeeBps = 0
+            0,  // protocolFeeBps = 0
+            _defaultMetadata()
         );
 
         // Seed initial liquidity

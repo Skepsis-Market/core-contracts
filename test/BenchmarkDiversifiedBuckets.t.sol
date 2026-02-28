@@ -27,6 +27,19 @@ contract BenchmarkDiversifiedBucketsTest is Test {
     uint256 internal constant INITIAL_LIQUIDITY = 10_000_000000; // $10,000
     uint256 internal constant TRADER_BANKROLL = 250_000_000000; // $250,000
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     function test_report_diversified_buys_2_5_10() public {
         _runScenario2Buckets();
         _runScenario5Buckets();
@@ -243,7 +256,8 @@ contract BenchmarkDiversifiedBucketsTest is Test {
             INITIAL_LIQUIDITY,
             ranges,
             0,
-            0
+            0,
+            _defaultMetadata()
         );
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);

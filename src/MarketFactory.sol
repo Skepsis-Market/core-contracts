@@ -16,15 +16,27 @@ contract MarketFactory is Ownable {
 
     /// @notice All parameters required to create a market in one tx
     struct MarketParams {
+        // Core LMSR parameters
         uint256 alpha;             // Creator-specified alpha (6 decimals)
         uint256 seedAmount;        // Initial liquidity from vault (USDC 6 decimals)
-        uint256[] bucketRanges;    // Bucket boundaries, length = buckets + 1
+        uint256 minValue;          // Minimum value in market range (Sui parity)
+        uint256 maxValue;          // Maximum value in market range (Sui parity)
+        uint256 bucketCount;       // Number of buckets (Sui parity)
         uint256 feeBps;            // Trading fee bps (0 = factory default)
         uint256 protocolFeeBps;    // Protocol fee share bps (0 = factory default)
         // Alpha decay — all zero means no decay (fixed alpha)
         uint256 alphaFinal;        // Decay floor (6 decimals). 0 = no decay
         uint256 decayStart;        // Unix timestamp when decay begins. 0 = block.timestamp
         uint256 decayDuration;     // Decay duration in seconds. 0 = no decay
+        // Market metadata (Sui parity)
+        string name;               // Market question/title
+        string description;        // Detailed description
+        string resolutionCriteria; // How the market will be resolved
+        string valueUnit;          // Unit label (e.g., "USD", "°C", "ETH")
+        address resolver;          // Who can resolve (0 = creator)
+        uint256 biddingDeadline;   // Betting close time (0 = no deadline)
+        uint256 scheduledResolutionTime; // When resolution is expected (0 = unspecified)
+        uint256 minBetSize;        // Minimum trade size in USDC (0 = no minimum)
     }
 
     // ─────────────────── State ───────────────────────────────────────────────
@@ -163,13 +175,11 @@ contract MarketFactory is Ownable {
         // ── Validate core params ──────────────────────────────────────────────
         if (p.alpha == 0) revert InvalidParameters();
         if (p.seedAmount < minPoolBalance) revert PoolBalanceTooLow();
-        if (p.bucketRanges.length < 2) revert InvalidParameters();
-        uint256 bucketCount = p.bucketRanges.length - 1;
-        if (bucketCount > maxBuckets) revert TooManyBuckets();
-
-        for (uint256 i = 1; i < p.bucketRanges.length; i++) {
-            if (p.bucketRanges[i] <= p.bucketRanges[i - 1]) revert InvalidBucketRanges();
-        }
+        if (p.bucketCount < 2) revert InvalidParameters();
+        if (p.bucketCount > maxBuckets) revert TooManyBuckets();
+        if (p.minValue >= p.maxValue) revert InvalidBucketRanges();
+        // Ensure even bucket widths
+        if ((p.maxValue - p.minValue) % p.bucketCount != 0) revert InvalidBucketRanges();
 
         uint256 actualFeeBps = p.feeBps == 0 ? defaultFeeBps : p.feeBps;
         uint256 actualProtocolFeeBps = p.protocolFeeBps == 0 ? defaultProtocolFeeBps : p.protocolFeeBps;
@@ -178,7 +188,25 @@ contract MarketFactory is Ownable {
 
         uint256 marketId = marketCount++;
 
+        // ── Build bucket ranges from minValue, maxValue, bucketCount (Sui parity) ──
+        uint256 bucketWidth = (p.maxValue - p.minValue) / p.bucketCount;
+        uint256[] memory bucketRanges = new uint256[](p.bucketCount + 1);
+        for (uint256 i = 0; i <= p.bucketCount; i++) {
+            bucketRanges[i] = p.minValue + (i * bucketWidth);
+        }
+
         // ── 1. Deploy market (alpha + seed are creator design params) ─────────
+        LMSRMarket.MarketMetadata memory metadata = LMSRMarket.MarketMetadata({
+            name: p.name,
+            description: p.description,
+            resolutionCriteria: p.resolutionCriteria,
+            valueUnit: p.valueUnit,
+            resolver: p.resolver,
+            biddingDeadline: p.biddingDeadline,
+            scheduledResolutionTime: p.scheduledResolutionTime,
+            minBetSize: p.minBetSize
+        });
+
         LMSRMarket market = new LMSRMarket(
             marketId,
             msg.sender,        // creator
@@ -187,9 +215,10 @@ contract MarketFactory is Ownable {
             address(positionNFT),
             p.alpha,           // creator-specified alpha (6 decimals)
             p.seedAmount,
-            p.bucketRanges,
+            bucketRanges,      // computed from minValue, maxValue, bucketCount
             actualFeeBps,
-            actualProtocolFeeBps
+            actualProtocolFeeBps,
+            metadata
         );
         marketAddress = address(market);
 
@@ -208,7 +237,7 @@ contract MarketFactory is Ownable {
             market.configureAlphaDecay(p.alphaFinal, startTime, p.decayDuration);
         }
 
-        emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, bucketCount);
+        emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, p.bucketCount);
     }
 
     // ─────────────────── Admin ────────────────────────────────────────────────

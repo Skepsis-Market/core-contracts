@@ -26,6 +26,19 @@ contract VaultTest is Test {
 
     uint256 constant SEED = 1_000_000000;   // $1k seed per market (from creator)
 
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
@@ -67,7 +80,7 @@ contract VaultTest is Test {
         uint256 _alpha = seed / _isqrt(numBuckets);
         m = new LMSRMarket(
             id, creator, address(0xFACE), address(usdc), address(0),
-            _alpha, seed, ranges, 100, 2000
+            _alpha, seed, ranges, 100, 2000, _defaultMetadata()
         );
         usdc.mint(address(m), seed);
     }

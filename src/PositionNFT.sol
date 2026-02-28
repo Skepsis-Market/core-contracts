@@ -4,7 +4,8 @@ pragma solidity 0.8.24;
 import {ERC1155} from "@openzeppelin/token/ERC1155/ERC1155.sol";
 
 /// @notice ERC-1155 position NFTs for prediction market shares
-/// @dev Token ID encoding: (marketId << 128) | bucketId
+/// @dev Token ID encoding: (marketId << 128) | (rangeLower << 64) | rangeUpper
+/// @dev For single-bucket positions, rangeLower == rangeUpper
 contract PositionNFT is ERC1155 {
     
     /// @notice Factory contract that deploys markets
@@ -38,31 +39,62 @@ contract PositionNFT is ERC1155 {
         factory = _factory;
     }
     
-    /// @notice Encode market ID and bucket ID into a single token ID
+    /// @notice Encode market ID and range bounds into a single token ID
     /// @param marketId The market identifier (must fit in uint128)
-    /// @param bucketId The bucket identifier (must fit in uint128)
+    /// @param rangeLower The lower bucket index (must fit in uint64)
+    /// @param rangeUpper The upper bucket index (must fit in uint64)
     /// @return tokenId The encoded token ID
-    /// @dev Will revert with panic if marketId or bucketId > type(uint128).max
-    function encodeTokenId(uint256 marketId, uint256 bucketId) 
+    /// @dev For single-bucket positions, set rangeLower == rangeUpper
+    function encodeTokenId(uint256 marketId, uint256 rangeLower, uint256 rangeUpper) 
         public 
         pure 
         returns (uint256 tokenId) 
     {
-        // Solidity 0.8+ automatically checks for overflow on cast
-        tokenId = (uint256(uint128(marketId)) << 128) | uint256(uint128(bucketId));
+        require(rangeUpper >= rangeLower, "Invalid range");
+        tokenId = (uint256(uint128(marketId)) << 128) | (uint256(uint64(rangeLower)) << 64) | uint256(uint64(rangeUpper));
     }
     
-    /// @notice Decode a token ID back into market ID and bucket ID
+    /// @notice Legacy encoder for single-bucket positions (backwards compatibility)
+    /// @param marketId The market identifier
+    /// @param bucketId The bucket identifier
+    /// @return tokenId The encoded token ID with rangeLower == rangeUpper == bucketId
+    function encodeTokenIdSingle(uint256 marketId, uint256 bucketId) 
+        public 
+        pure 
+        returns (uint256 tokenId) 
+    {
+        return encodeTokenId(marketId, bucketId, bucketId);
+    }
+    
+    /// @notice Decode a token ID back into market ID and range bounds
     /// @param tokenId The encoded token ID
     /// @return marketId The market identifier
-    /// @return bucketId The bucket identifier
+    /// @return rangeLower The lower bucket index
+    /// @return rangeUpper The upper bucket index
     function decodeTokenId(uint256 tokenId) 
         public 
         pure 
-        returns (uint256 marketId, uint256 bucketId) 
+        returns (uint256 marketId, uint256 rangeLower, uint256 rangeUpper) 
     {
         marketId = tokenId >> 128;
-        bucketId = uint256(uint128(tokenId)); // Mask lower 128 bits
+        rangeLower = uint256(uint64(tokenId >> 64));
+        rangeUpper = uint256(uint64(tokenId));
+    }
+    
+    /// @notice Check if a token represents a range (multiple buckets)
+    /// @param tokenId The encoded token ID
+    /// @return isRange True if rangeLower != rangeUpper
+    function isRangeToken(uint256 tokenId) public pure returns (bool) {
+        (, uint256 lower, uint256 upper) = decodeTokenId(tokenId);
+        return lower != upper;
+    }
+    
+    /// @notice Get the number of buckets covered by a token
+    /// @param tokenId The encoded token ID
+    /// @return count Number of buckets (rangeUpper - rangeLower + 1)
+    function bucketCount(uint256 tokenId) public pure returns (uint256) {
+        (, uint256 lower, uint256 upper) = decodeTokenId(tokenId);
+        return upper - lower + 1;
     }
     
     /// @notice Authorize a market contract to mint/burn tokens
@@ -92,7 +124,7 @@ contract PositionNFT is ERC1155 {
     /// @notice Mint position tokens to a user
     /// @dev Only authorized markets can mint
     /// @param to Recipient address
-    /// @param tokenId Encoded token ID (marketId << 128 | bucketId)
+    /// @param tokenId Encoded token ID (marketId << 128 | rangeLower << 64 | rangeUpper)
     /// @param amount Number of tokens to mint
     function mint(address to, uint256 tokenId, uint256 amount) 
         external 
@@ -115,24 +147,25 @@ contract PositionNFT is ERC1155 {
     
     /// @notice Get token URI with IPFS CID
     /// @param tokenId Encoded token ID
-    /// @return URI string in format ipfs://{CID}/{bucketId}.json
+    /// @return URI string in format ipfs://{CID}/{rangeLower}-{rangeUpper}.json
     function uri(uint256 tokenId) 
         public 
         view 
         override 
         returns (string memory) 
     {
-        (uint256 marketId, uint256 bucketId) = decodeTokenId(tokenId);
+        (uint256 marketId, uint256 rangeLower, uint256 rangeUpper) = decodeTokenId(tokenId);
         bytes32 cid = cidByMarket[marketId];
         
-        // Convert CID from bytes32 to base58 string (simplified - real impl would use proper base58)
-        // For now, return hex representation as placeholder
+        // Convert CID from bytes32 to hex string (simplified - real impl would use proper base58)
         return string(
             abi.encodePacked(
                 "ipfs://",
                 _toHexString(cid),
                 "/",
-                _toString(bucketId),
+                _toString(rangeLower),
+                "-",
+                _toString(rangeUpper),
                 ".json"
             )
         );

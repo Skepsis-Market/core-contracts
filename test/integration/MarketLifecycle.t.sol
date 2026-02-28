@@ -78,14 +78,17 @@ contract MarketLifecycleTest is Test {
 
     function _params(
         uint256 sa,
-        uint256[] memory br,
+        uint256 minValue,
+        uint256 maxValue,
+        uint256 bucketCount,
         uint256 feeBps,
         uint256 protoBps
     ) internal pure returns (MarketFactory.MarketParams memory p) {
-        uint256 buckets = br.length - 1;
-        p.alpha        = sa / _isqrt(buckets);
+        p.alpha        = sa / _isqrt(bucketCount);
         p.seedAmount   = sa;
-        p.bucketRanges = br;
+        p.minValue     = minValue;
+        p.maxValue     = maxValue;
+        p.bucketCount  = bucketCount;
         p.feeBps       = feeBps;
         p.protocolFeeBps = protoBps;
     }
@@ -101,11 +104,13 @@ contract MarketLifecycleTest is Test {
 
     function _cm(
         uint256 pb,
-        uint256[] memory br,
+        uint256 minValue,
+        uint256 maxValue,
+        uint256 bucketCount,
         uint256 feeBps,
         uint256 protoBps
     ) internal returns (address) {
-        return factory.createMarket(_params(pb, br, feeBps, protoBps));
+        return factory.createMarket(_params(pb, minValue, maxValue, bucketCount, feeBps, protoBps));
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
@@ -113,13 +118,10 @@ contract MarketLifecycleTest is Test {
     /// @notice Test full lifecycle: Create → Trade → Resolve → Claim → Withdraw
     function test_fullLifecycle_bitcoinScenario() public {
         // === PHASE 1: Market Creation ===
-        uint256[] memory bucketRanges = new uint256[](11);
-        for (uint256 i = 0; i <= 10; i++) {
-            bucketRanges[i] = i * 10; // 0, 10, 20, ..., 100
-        }
+        // 10 buckets: 0, 10, 20, ..., 100
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 100, 10, 50, 2000);
         
         LMSRMarket market = LMSRMarket(marketAddress);
         uint256 marketId = market.marketId();
@@ -225,14 +227,10 @@ contract MarketLifecycleTest is Test {
     
     /// @notice Test LP profit scenario with high trading volume
     function test_lpProfit_highVolume() public {
-        // Create market
-        uint256[] memory bucketRanges = new uint256[](6);
-        for (uint256 i = 0; i <= 5; i++) {
-            bucketRanges[i] = i * 20; // 0, 20, 40, 60, 80, 100
-        }
+        // Create market with 5 buckets: 0, 20, 40, 60, 80, 100
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 100, 5, 50, 2000);
 
         LMSRMarket market = LMSRMarket(marketAddress);
 
@@ -283,14 +281,10 @@ contract MarketLifecycleTest is Test {
     
     /// @notice Test LP loss scenario with low trading volume
     function test_lpLoss_lowVolume() public {
-        // Create market
-        uint256[] memory bucketRanges = new uint256[](6);
-        for (uint256 i = 0; i <= 5; i++) {
-            bucketRanges[i] = i * 20;
-        }
+        // Create market with 5 buckets: 0, 20, 40, 60, 80, 100
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 100, 5, 50, 2000);
 
         LMSRMarket market = LMSRMarket(marketAddress);
 
@@ -320,15 +314,10 @@ contract MarketLifecycleTest is Test {
     
     /// @notice Test multi-user trading interactions
     function test_multiUser_trading() public {
-        // Create market
-        uint256[] memory bucketRanges = new uint256[](4);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 100;
+        // Create market with 3 buckets: 0, 33, 66, 99 (uniform, width 33 each)
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 99, 3, 50, 2000);
 
         LMSRMarket market = LMSRMarket(marketAddress);
 
@@ -388,15 +377,10 @@ contract MarketLifecycleTest is Test {
     
     /// @notice Test fee distribution (80% LP, 20% protocol)
     function test_fees_distributedCorrectly() public {
-        // Create market
-        uint256[] memory bucketRanges = new uint256[](4);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 33;
-        bucketRanges[2] = 66;
-        bucketRanges[3] = 100;
+        // Create market with 3 buckets: 0, 33, 66, 99 (width 33 each)
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 99, 3, 50, 2000);
 
         LMSRMarket market = LMSRMarket(marketAddress);
 
@@ -431,14 +415,10 @@ contract MarketLifecycleTest is Test {
     
     /// @notice Test preventing double LP withdrawal
     function test_lpWithdrawal_preventsDoubleWithdraw() public {
-        // Create and resolve market
-        uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
+        // Create and resolve market with 2 buckets: 0, 50, 100
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 100, 2, 50, 2000);
 
         LMSRMarket market = LMSRMarket(marketAddress);
 
@@ -465,15 +445,10 @@ contract MarketLifecycleTest is Test {
     
     /// @notice Test volume tracking
     function test_volumeTracking_accurate() public {
-        // Create market
-        uint256[] memory bucketRanges = new uint256[](4);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 33;
-        bucketRanges[2] = 66;
-        bucketRanges[3] = 100;
+        // Create market with 3 buckets: 0, 33, 66, 99 (width 33 each)
         
         vm.prank(creator);
-        address marketAddress = _cm(POOL_BALANCE, bucketRanges, 50, 2000);
+        address marketAddress = _cm(POOL_BALANCE, 0, 99, 3, 50, 2000);
 
         LMSRMarket market = LMSRMarket(marketAddress);
 

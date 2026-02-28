@@ -16,6 +16,19 @@ contract RangeLMSRTest is Test {
     
     uint256 constant POOL = 10_000_000000; // $10,000 (6 decimals)
     uint256 constant BUCKET_COUNT = 100;
+
+    function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
+        return LMSRMarket.MarketMetadata({
+            name: "",
+            description: "",
+            resolutionCriteria: "",
+            valueUnit: "",
+            resolver: address(0),
+            biddingDeadline: 0,
+            scheduledResolutionTime: 0,
+            minBetSize: 0
+        });
+    }
     
     function setUp() public {
         usdc = new MockUSDC();
@@ -41,7 +54,8 @@ contract RangeLMSRTest is Test {
             POOL,           // poolBalance
             ranges,         // bucket ranges
             50,             // feeBps (0.5%)
-            2000            // protocolFeeBps (20% of fees)
+            2000,           // protocolFeeBps (20% of fees)
+            _defaultMetadata()
         );
         
         usdc.transfer(address(market), POOL);
@@ -153,13 +167,13 @@ contract RangeLMSRTest is Test {
         
         LMSRMarket marketRange = new LMSRMarket(
             2, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, 50, 2000
+            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata()
         );
         usdc.transfer(address(marketRange), POOL);
         
         LMSRMarket marketSingle = new LMSRMarket(
             3, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, 50, 2000
+            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata()
         );
         usdc.transfer(address(marketSingle), POOL);
         vm.stopPrank();
