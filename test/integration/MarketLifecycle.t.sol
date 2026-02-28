@@ -164,9 +164,9 @@ contract MarketLifecycleTest is Test {
         assertApproxEqAbs(poolAfterTrades, POOL_BALANCE + expectedIncrease, 10, "Pool should grow");
         
         // === PHASE 3: Resolution ===
-        // Bitcoin settles at $75k → bucket 7 wins
+        // Bitcoin settles at $75k → value 70 resolves to bucket 7
         vm.prank(creator);
-        market.resolveMarket(7);
+        market.resolveMarket(70); // value 70 = bucket 7 (width 10)
         
         assertEq(uint256(market.status()), uint256(LMSRMarket.MarketStatus.RESOLVED));
         assertEq(market.winningBucket(), 7);
@@ -259,9 +259,9 @@ contract MarketLifecycleTest is Test {
         
         // Total volume: $750, fees: ~$3.75
         
-        // Resolve to bucket 1 (Alice has shares here, but so does liquidity pool initially)
+        // Resolve with value 20 (bucket 1 in 5-bucket market with width 20)
         vm.prank(creator);
-        market.resolveMarket(1);
+        market.resolveMarket(20);
         
         // Check LP profitability before withdrawal
         (int256 profit, int256 roi, uint256 feesEarned) = market.getLPProfitability();
@@ -296,7 +296,7 @@ contract MarketLifecycleTest is Test {
         uint256 aliceShares = market.buyShares(0, smallTradeAmount, 0);
         vm.stopPrank();
         
-        // Resolve to bucket 0 (Alice wins)
+        // Resolve with value 0 (bucket 0, Alice wins)
         vm.prank(creator);
         market.resolveMarket(0);
         
@@ -354,9 +354,9 @@ contract MarketLifecycleTest is Test {
         assertEq(usdc.balanceOf(bob), bobInitial - TRADE_AMOUNT);
         assertEq(usdc.balanceOf(charlie), charlieInitial - TRADE_AMOUNT);
         
-        // Resolve to bucket 1 (Bob wins)
+        // Resolve with value 33 (bucket 1 in 3-bucket market with width 33, Bob wins)
         vm.prank(creator);
-        market.resolveMarket(1);
+        market.resolveMarket(33);
         
         // Only Bob can claim
         vm.prank(bob);
@@ -429,7 +429,7 @@ contract MarketLifecycleTest is Test {
         vm.stopPrank();
         
         vm.prank(creator);
-        market.resolveMarket(1);
+        market.resolveMarket(50); // value 50 = bucket 1 (width 50)
         
         // First withdrawal succeeds
         vm.prank(creator);

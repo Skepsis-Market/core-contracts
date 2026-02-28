@@ -300,7 +300,7 @@ contract VaultTest is Test {
 
         // Resolve
         vm.prank(creator);
-        market1.resolveMarket(0); // bucket 0 wins
+        market1.resolveMarket(0); // value 0 = bucket 0 wins
 
         uint256 vaultLiquidBefore = usdc.balanceOf(address(vault));
 
@@ -322,7 +322,7 @@ contract VaultTest is Test {
         vault.deployTo(address(market1), 5_000_000000);
 
         vm.prank(creator);
-        market1.resolveMarket(1);
+        market1.resolveMarket(25); // value 25 = bucket 1
 
         vault.harvestResolved(address(market1));
 
@@ -453,7 +453,7 @@ contract VaultTest is Test {
 
         // Resolve market1 (winning bucket 2, no traders on bucket 2 so winShares ≈ initialShares)
         vm.prank(creator);
-        market1.resolveMarket(2);
+        market1.resolveMarket(50); // value 50 = bucket 2
 
         // Before harvest: totalAssets includes resolved market's LP residual
         uint256 taBeforeHarvest = vault.totalAssets();
@@ -475,7 +475,7 @@ contract VaultTest is Test {
         vault.deployTo(address(market1), 5_000_000000);
 
         vm.prank(creator);
-        market1.resolveMarket(0);
+        market1.resolveMarket(0); // value 0 = bucket 0
 
         uint256 vaultBalBefore = usdc.balanceOf(address(vault));
         uint256 creatorBalBefore = usdc.balanceOf(creator);
@@ -493,7 +493,7 @@ contract VaultTest is Test {
         LMSRMarket noVaultMarket = _deployMarket(99, buckets4, 1_000_000000);
 
         vm.prank(creator);
-        noVaultMarket.resolveMarket(0);
+        noVaultMarket.resolveMarket(0); // value 0 = bucket 0
 
         uint256 creatorBalBefore = usdc.balanceOf(creator);
         vm.prank(creator);

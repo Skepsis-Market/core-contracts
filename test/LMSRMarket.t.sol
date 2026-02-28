@@ -415,35 +415,36 @@ contract LMSRMarketTest is Test {
     // ============================================
 
     function test_resolveMarket_setsWinningBucket() public {
-        uint256 winningBucketId = 2;
+        uint256 winningValue = 50; // bucket 2 in 0-100 with 4 buckets
         
         vm.prank(creator);
-        market.resolveMarket(winningBucketId);
+        market.resolveMarket(winningValue);
         
         assertEq(uint8(market.status()), uint8(LMSRMarket.MarketStatus.RESOLVED));
-        assertEq(market.winningBucket(), winningBucketId);
+        assertEq(market.winningBucket(), 2); // value 50 → bucket 2
+        assertEq(market.resolutionValue(), winningValue);
         assertEq(market.resolutionTime(), block.timestamp);
     }
 
     function test_resolveMarket_revertsIfNotCreator() public {
         vm.prank(user1);
         vm.expectRevert(LMSRMarket.Unauthorized.selector);
-        market.resolveMarket(0);
+        market.resolveMarket(0); // value 0 = bucket 0
     }
 
     function test_resolveMarket_revertsIfAlreadyResolved() public {
         vm.prank(creator);
-        market.resolveMarket(1);
+        market.resolveMarket(25); // value 25 = bucket 1
         
         vm.prank(creator);
         vm.expectRevert(LMSRMarket.MarketAlreadyResolved.selector);
-        market.resolveMarket(2);
+        market.resolveMarket(50); // value 50 = bucket 2
     }
 
-    function test_resolveMarket_revertsIfInvalidBucket() public {
+    function test_resolveMarket_revertsIfInvalidValue() public {
         vm.prank(creator);
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.resolveMarket(99);
+        vm.expectRevert(LMSRMarket.InvalidResolutionValue.selector);
+        market.resolveMarket(999); // value 999 is outside [0, 100]
     }
 
     function test_claimWinnings_pays1PerShare() public {
@@ -459,9 +460,9 @@ contract LMSRMarketTest is Test {
         console.log("sharesMinted in USDC units:", sharesMinted / 1e6);
         vm.stopPrank();
         
-        // Creator resolves to bucket 2
+        // Creator resolves with value 50 (bucket 2)
         vm.prank(creator);
-        market.resolveMarket(bucketId);
+        market.resolveMarket(50); // value 50 = bucket 2
         
         // User claims winnings
         uint256 balanceBefore = usdc.balanceOf(user1);
@@ -488,9 +489,9 @@ contract LMSRMarketTest is Test {
     }
 
     function test_claimWinnings_revertsIfWrongBucket() public {
-        // Resolve to bucket 1
+        // Resolve with value 25 (bucket 1)
         vm.prank(creator);
-        market.resolveMarket(1);
+        market.resolveMarket(25);
         
         // Try to claim from bucket 2
         vm.prank(user1);
@@ -511,7 +512,7 @@ contract LMSRMarketTest is Test {
         uint256 poolBefore = market.poolBalance();
         
         vm.prank(creator);
-        market.resolveMarket(bucketId);
+        market.resolveMarket(25); // value 25 = bucket 1
         
         vm.prank(user1);
         market.claimWinnings(bucketId, sharesMinted);
@@ -540,9 +541,9 @@ contract LMSRMarketTest is Test {
         
         uint256 poolBeforeResolution = market.poolBalance();
         
-        // Resolve market
+        // Resolve market with value 25 (bucket 1)
         vm.prank(creator);
-        market.resolveMarket(bucketId);
+        market.resolveMarket(25);
         
         // Get winning shares - now in 6 decimals
         LMSRMarket.Bucket memory winningBucket = market.getBucket(bucketId);
@@ -569,7 +570,7 @@ contract LMSRMarketTest is Test {
 
     function test_withdrawLP_revertsIfNotCreator() public {
         vm.prank(creator);
-        market.resolveMarket(0);
+        market.resolveMarket(0); // value 0 = bucket 0
         
         vm.prank(user1);
         vm.expectRevert(LMSRMarket.Unauthorized.selector);
@@ -588,7 +589,7 @@ contract LMSRMarketTest is Test {
         vm.stopPrank();
         
         vm.prank(creator);
-        market.resolveMarket(bucketId);
+        market.resolveMarket(0); // value 0 = bucket 0
         
         vm.startPrank(creator);
         market.withdrawLP();
@@ -651,7 +652,7 @@ contract LMSRMarketTest is Test {
         // LP should get back (poolBalance - winningShares)
         // Initial uniform distribution: each bucket has poolBalance/4 WAD shares
         vm.prank(creator);
-        market.resolveMarket(0);
+        market.resolveMarket(0); // value 0 = bucket 0
         
         (int256 unrealizedProfit,,) = market.getLPProfitability();
         

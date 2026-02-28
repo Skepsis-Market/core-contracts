@@ -190,7 +190,7 @@ contract GasBenchmarkTest is Test {
         uint256 sharesBought = market.buyShares(5, 100_000000, 0);
         vm.stopPrank();
         
-        // Resolve
+        // Resolve with value 5 (bucket 5 in 10-bucket market, width=1)
         vm.prank(creator);
         market.resolveMarket(5);
         
@@ -209,7 +209,7 @@ contract GasBenchmarkTest is Test {
         vm.stopPrank();
         
         vm.prank(creator);
-        market.resolveMarket(25);
+        market.resolveMarket(25); // value 25 = bucket 25 (width 1)
         
         vm.prank(trader);
         market.claimWinnings(25, sharesBought);
@@ -225,7 +225,7 @@ contract GasBenchmarkTest is Test {
         vm.stopPrank();
         
         vm.prank(creator);
-        market.resolveMarket(50);
+        market.resolveMarket(50); // value 50 = bucket 50 (width 1)
         
         vm.prank(trader);
         market.claimWinnings(50, sharesBought);
@@ -241,7 +241,7 @@ contract GasBenchmarkTest is Test {
         market.buyShares(5, 100_000000, 0);
         vm.stopPrank();
         
-        // Resolve
+        // Resolve with value 3 (bucket 3 in 10-bucket market, width=1)
         vm.prank(creator);
         market.resolveMarket(3);
         
@@ -255,7 +255,7 @@ contract GasBenchmarkTest is Test {
         LMSRMarket market = _createMarket(10);
         
         vm.prank(creator);
-        market.resolveMarket(5);
+        market.resolveMarket(5); // value 5 = bucket 5 (width 1)
     }
     
     /// @notice Benchmark: Sequential trades (realistic scenario)

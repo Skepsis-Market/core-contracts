@@ -69,6 +69,7 @@ contract LMSRMarket is ReentrancyGuard {
 
     MarketStatus public status;
     uint256 public winningBucket;
+    uint256 public resolutionValue;  // Original value that resolved the market (e.g., $115,000)
     uint256 public totalVolume;
     uint256 public resolutionTime;
     bool public lpWithdrawn;
@@ -125,6 +126,7 @@ contract LMSRMarket is ReentrancyGuard {
 
     event MarketResolved(
         uint256 indexed marketId,
+        uint256 resolutionValue,
         uint256 winningBucket,
         uint256 resolutionTime
     );
@@ -195,6 +197,7 @@ contract LMSRMarket is ReentrancyGuard {
     error MarketNotActive();
     error MarketAlreadyResolved();
     error InvalidBucket();
+    error InvalidResolutionValue();
     error InsufficientBalance();
     error Unauthorized();
     error SolvencyViolation();
@@ -1329,18 +1332,34 @@ contract LMSRMarket is ReentrancyGuard {
         emit SharesSold(marketId, msg.sender, bucketId, sharesToSell, payoutUSDC, newPrice);
     }
 
-    /// @notice Resolve market with winning outcome (admin only)
-    /// @param _winningBucket The bucket ID that won
-    function resolveMarket(uint256 _winningBucket) external {
+    /// @notice Resolve market with winning outcome value (Sui parity)
+    /// @dev Takes a resolution value in the market's value space (e.g., $115,000) and
+    ///      calculates which bucket contains that value. Matches Sui's resolve_market_with_outcome.
+    /// @param _resolutionValue The actual outcome value (e.g., 115000 for $115K)
+    function resolveMarket(uint256 _resolutionValue) external {
         if (msg.sender != resolver) revert Unauthorized();
         if (status != MarketStatus.ACTIVE) revert MarketAlreadyResolved();
-        if (_winningBucket >= bucketCount) revert InvalidBucket();
+        
+        // Validate resolution value is within market bounds
+        if (_resolutionValue < marketMin || _resolutionValue > marketMax) {
+            revert InvalidResolutionValue();
+        }
+        
+        // Calculate winning bucket from resolution value (same as Sui)
+        // bucket_index = (value - marketMin) / bucketWidth
+        uint256 calculatedBucket = (_resolutionValue - marketMin) / bucketWidth;
+        
+        // Handle edge case: if value equals marketMax, it belongs to the last bucket
+        if (calculatedBucket >= bucketCount) {
+            calculatedBucket = bucketCount - 1;
+        }
 
         status = MarketStatus.RESOLVED;
-        winningBucket = _winningBucket;
+        resolutionValue = _resolutionValue;
+        winningBucket = calculatedBucket;
         resolutionTime = block.timestamp;
 
-        emit MarketResolved(marketId, _winningBucket, block.timestamp);
+        emit MarketResolved(marketId, _resolutionValue, calculatedBucket, block.timestamp);
     }
 
     /// @notice Claim winnings for a resolved market (winning shares pay $1 each)

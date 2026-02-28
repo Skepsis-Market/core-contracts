@@ -158,7 +158,7 @@ contract CompareWithSuiTest is Test {
         
         // RESOLVE to middle bucket (46 = $114,600-$114,700)
         vm.prank(creator);
-        market.resolveMarket(46);
+        market.resolveMarket(114600); // bucket 46
         
         console.log("3. RESOLVE: To bucket 46 ($114,600-$114,700)");
         
@@ -315,7 +315,7 @@ contract CompareWithSuiTest is Test {
         console.log("   ---------------");
         
         vm.prank(creator);
-        market.resolveMarket(46);
+        market.resolveMarket(114600); // bucket 46
         
         console.log("   Winning bucket: 46 ($114,600 - $114,700)");
         console.log("   Winning shares:", sharesByBucket[1]);

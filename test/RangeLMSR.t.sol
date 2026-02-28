@@ -223,9 +223,9 @@ contract RangeLMSRTest is Test {
         uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
         vm.stopPrank();
         
-        // Resolve to bucket 46 (within range 45-47)
+        // Resolve with value 114600 (bucket 46, within range 45-47)
         vm.prank(creator);
-        market.resolveMarket(46);
+        market.resolveMarket(114600);
         
         // Claim
         uint256 traderBalBefore = usdc.balanceOf(trader);
@@ -249,9 +249,9 @@ contract RangeLMSRTest is Test {
         uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
         vm.stopPrank();
         
-        // Resolve to bucket 50 (OUTSIDE range 45-47)
+        // Resolve with value 115000 (bucket 50, OUTSIDE range 45-47)
         vm.prank(creator);
-        market.resolveMarket(50);
+        market.resolveMarket(115000);
         
         // Claim should fail
         vm.prank(trader);
