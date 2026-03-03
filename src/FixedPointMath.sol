@@ -40,7 +40,7 @@ library FixedPointMath {
     /// @notice Calculate e^x using PRB-Math
     /// @param x Exponent in WAD
     /// @return e^x in WAD
-    function exp(uint256 x) internal pure returns (uint256) {
+    function exp(uint256 x) public pure returns (uint256) {
         UD60x18 xUD = ud(x);
         UD60x18 result = xUD.exp();
         return unwrap(result);
@@ -49,7 +49,7 @@ library FixedPointMath {
     /// @notice Calculate ln(x) using PRB-Math
     /// @param x Value in WAD (must be > 0)
     /// @return ln(x) in WAD
-    function ln(uint256 x) internal pure returns (uint256) {
+    function ln(uint256 x) public pure returns (uint256) {
         require(x > 0, "InvalidInput");
         UD60x18 xUD = ud(x);
         UD60x18 result = xUD.ln();

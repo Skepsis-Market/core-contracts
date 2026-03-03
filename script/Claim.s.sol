@@ -3,7 +3,7 @@ pragma solidity 0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
-import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {IPositionNFT} from "../src/interfaces/IPositionNFT.sol";
 import {Vault} from "../src/Vault.sol";
 
@@ -57,7 +57,7 @@ contract ClaimScript is Script {
         uint256 pk      = vm.envUint("PRIVATE_KEY");
 
         LMSRMarket   market = LMSRMarket(vm.envAddress("MARKET_ADDRESS"));
-        MockUSDC     usdc   = MockUSDC(vm.envAddress("USDC_ADDRESS"));
+        IERC20       usdc   = IERC20(address(market.usdcToken()));
         IPositionNFT nft    = IPositionNFT(market.positionNFT());
 
         require(
@@ -135,7 +135,7 @@ contract HarvestLPScript is Script {
 
         LMSRMarket market = LMSRMarket(vm.envAddress("MARKET_ADDRESS"));
         Vault      vault  = Vault(vm.envAddress("VAULT_ADDRESS"));
-        MockUSDC   usdc   = MockUSDC(vm.envAddress("USDC_ADDRESS"));
+        IERC20     usdc   = IERC20(vault.asset());
 
         require(
             market.status() == LMSRMarket.MarketStatus.RESOLVED,

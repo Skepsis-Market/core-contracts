@@ -6,6 +6,7 @@ import {PositionNFT} from "./PositionNFT.sol";
 import {IUSDC} from "./interfaces/IUSDC.sol";
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
 import {Vault} from "./Vault.sol";
+import {Clones} from "@openzeppelin/proxy/Clones.sol";
 
 /// @notice Factory contract for creating LMSR prediction markets
 /// @dev Only whitelisted creators can deploy markets.
@@ -59,6 +60,10 @@ contract MarketFactory is Ownable {
     /// @notice Market ID → market address
     mapping(uint256 => address) public marketById;
 
+    /// @notice LMSRMarket implementation contract cloned for every new market (EIP-1167).
+    ///         Removes 43k of LMSRMarket initcode from MarketFactory's own bytecode.
+    address public immutable implementation;
+
     /// @notice Creator address → remaining market-creation slots (0 = not allowed)
     mapping(address => uint256) public creatorAllowance;
 
@@ -103,6 +108,7 @@ contract MarketFactory is Ownable {
     // ─────────────────── Constructor ─────────────────────────────────────────
 
     constructor(
+        address _implementation,
         address _usdcToken,
         address _positionNFT,
         uint256 _minPoolBalance,
@@ -110,6 +116,7 @@ contract MarketFactory is Ownable {
         uint256 _defaultFeeBps,
         uint256 _defaultProtocolFeeBps
     ) Ownable(msg.sender) {
+        if (_implementation == address(0)) revert InvalidParameters();
         if (_usdcToken == address(0)) revert InvalidParameters();
         if (_positionNFT == address(0)) revert InvalidParameters();
         if (_minPoolBalance == 0) revert InvalidParameters();
@@ -117,6 +124,7 @@ contract MarketFactory is Ownable {
         if (_defaultFeeBps > 500) revert InvalidParameters();
         if (_defaultProtocolFeeBps > 10000) revert InvalidParameters();
 
+        implementation = _implementation;
         usdcToken = IUSDC(_usdcToken);
         positionNFT = PositionNFT(_positionNFT);
         minPoolBalance = _minPoolBalance;
@@ -207,7 +215,9 @@ contract MarketFactory is Ownable {
             minBetSize: p.minBetSize
         });
 
-        LMSRMarket market = new LMSRMarket(
+        marketAddress = Clones.clone(implementation);
+        LMSRMarket market = LMSRMarket(marketAddress);
+        market.initialize(
             marketId,
             msg.sender,        // creator
             address(this),     // factory
@@ -220,7 +230,6 @@ contract MarketFactory is Ownable {
             actualProtocolFeeBps,
             metadata
         );
-        marketAddress = address(market);
 
         // ── 2. Register + authorize ───────────────────────────────────────────
         isValidMarket[marketAddress] = true;

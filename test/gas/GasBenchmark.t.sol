@@ -27,22 +27,35 @@ contract GasBenchmarkTest is Test {
         
         // Deploy USDC
         usdc = new MockUSDC();
-        
-        // Predict factory address
-        address predictedFactory = vm.computeCreateAddress(admin, 2);
-        
-        // Deploy PositionNFT
-        positionNFT = new PositionNFT(predictedFactory);
-        
-        // Deploy factory
-        factory = new MarketFactory(
-            address(usdc),
-            address(positionNFT),
-            1000_000000, // minPoolBalance
-            100, // maxBuckets
-            50, // defaultFeeBps
-            2000 // defaultProtocolFeeBps
-        );
+
+        // Deploy LMSRMarket implementation (EIP-1167 clone source)
+        {
+            uint256[] memory implRanges = new uint256[](2);
+            implRanges[0] = 0;
+            implRanges[1] = 1;
+            LMSRMarket.MarketMetadata memory implMeta;
+            address lmsrImpl = address(new LMSRMarket(
+                0, address(0), address(0), address(usdc), address(0),
+                1, 1, implRanges, 0, 0, implMeta
+            ));
+
+            // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
+            address predictedFactory = vm.computeCreateAddress(admin, 3);
+
+            // Deploy PositionNFT
+            positionNFT = new PositionNFT(predictedFactory);
+
+            // Deploy factory
+            factory = new MarketFactory(
+                lmsrImpl,
+                address(usdc),
+                address(positionNFT),
+                1000_000000, // minPoolBalance
+                100, // maxBuckets
+                50, // defaultFeeBps
+                2000 // defaultProtocolFeeBps
+            );
+        }
         
         // Whitelist the market creator
         factory.setCreatorAllowance(creator, 100);

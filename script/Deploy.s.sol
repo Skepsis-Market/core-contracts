@@ -55,6 +55,7 @@ contract DeployScript is Script {
     // ─── Runtime ─────────────────────────────────────────────────────────────
     address public deployer;
     MockUSDC public usdc;          // Pre-deployed — read from USDC_ADDRESS env var
+    address public lmsrImpl;       // LMSRMarket implementation contract (EIP-1167 clone source)
     PositionNFT public positionNFT;
     MarketFactory public factory;
     Vault public vault;
@@ -68,15 +69,22 @@ contract DeployScript is Script {
         vm.startBroadcast(pk);
 
         console.log("=================================================");
-        console.log("  Deploying to Avalanche Fuji (chainId 43113)");
-        console.log("=================================================");
+        console.log("  Deploying Skepsis Protocol");
+        console.log("  Chain ID:", block.chainid);
+        console.log("==================================================");
         console.log("Deployer:", deployer);
 
-        // ── 1. Attach to existing MockUSDC ────────────────────────────────────
-        // MockUSDC is already deployed at USDC_ADDRESS — no need to redeploy.
-        // We mint extra test tokens to the deployer to cover vault seeding.
-        console.log("\n[1/5] Using existing MockUSDC...");
-        usdc = MockUSDC(vm.envAddress("USDC_ADDRESS"));
+        // ── 1. USDC ───────────────────────────────────────────────────────────
+        // Fuji:  reads existing MockUSDC from USDC_ADDRESS env var (public mint).
+        // Local: USDC_ADDRESS is blank → deploys a fresh MockUSDC.
+        address usdcEnv = vm.envOr("USDC_ADDRESS", address(0));
+        if (usdcEnv != address(0)) {
+            console.log("\n[1/6] Using existing MockUSDC...");
+            usdc = MockUSDC(usdcEnv);
+        } else {
+            console.log("\n[1/6] Deploying fresh MockUSDC (local chain)...");
+            usdc = new MockUSDC();
+        }
         usdc.mint(deployer, VAULT_SEED_USDC + 100_000_000000); // vault seed + $100k trading buffer
         console.log("  MockUSDC:    ", address(usdc));
         console.log("  Deployer balance:", usdc.balanceOf(deployer) / 1e6, "USDC");
@@ -84,7 +92,22 @@ contract DeployScript is Script {
         // ── 2. PositionNFT ────────────────────────────────────────────────────
         // Must be constructed with the factory address it will trust.
         // Predict factory address (next deployment after positionNFT).
-        console.log("\n[2/5] Deploying PositionNFT...");
+        console.log("\n[2/6] Deploying LMSRMarket implementation (clone source)...");
+        // Deploys a locked LMSRMarket template. MarketFactory Clones.clone()s it for every
+        // new market, removing 43k of LMSRMarket initcode from MarketFactory's bytecode.
+        {
+            uint256[] memory implRanges = new uint256[](2);
+            implRanges[0] = 0;
+            implRanges[1] = 1;
+            LMSRMarket.MarketMetadata memory implMeta;
+            lmsrImpl = address(new LMSRMarket(
+                0, address(0), address(0), address(usdc), address(0),
+                1, 1, implRanges, 0, 0, implMeta
+            ));
+        }
+        console.log("  LMSRMarket impl:", lmsrImpl);
+
+        console.log("\n[3/6] Deploying PositionNFT...");
         address predictedFactory = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
         positionNFT = new PositionNFT(predictedFactory);
         console.log("  PositionNFT: ", address(positionNFT));
@@ -93,8 +116,9 @@ contract DeployScript is Script {
         // ── 3. MarketFactory ──────────────────────────────────────────────────
         // Deploys LMSRMarket clones, enforces pool size limits and fee params.
         // setCreatorAllowance gives the deployer permission to create markets.
-        console.log("\n[3/5] Deploying MarketFactory...");
+        console.log("\n[4/6] Deploying MarketFactory...");
         factory = new MarketFactory(
+            lmsrImpl,
             address(usdc),
             address(positionNFT),
             MIN_POOL_BALANCE,
@@ -111,7 +135,7 @@ contract DeployScript is Script {
         // Vault is ERC-4626.  Two-way wiring is needed:
         //   vault.setFactory(factory) → only factory can call vault.fundNewMarket()
         //   factory.setVault(vault)   → factory pulls seed capital from vault on createMarket()
-        console.log("\n[4/5] Deploying Vault + wiring...");
+        console.log("\n[5/6] Deploying Vault + wiring...");
         vault = new Vault(address(usdc), "Skepsis Vault", "sVLT", deployer);
         vault.setFactory(address(factory));
         factory.setVault(address(vault));
@@ -122,7 +146,7 @@ contract DeployScript is Script {
         // ── 5. Seed Vault + Create Market ─────────────────────────────────────
         // Deployer becomes the first LP.  Any subsequent createMarket() call will
         // pull from this pool (up to 20% of NAV per market, min 20% buffer kept).
-        console.log("\n[5/5] Seeding Vault and creating sample market...");
+        console.log("\n[6/6] Seeding Vault and creating sample market...");
         usdc.approve(address(vault), VAULT_SEED_USDC);
         vault.deposit(VAULT_SEED_USDC, deployer);
         console.log("  Deposited:    ", VAULT_SEED_USDC / 1e6, "USDC");
@@ -169,6 +193,7 @@ contract DeployScript is Script {
         console.log("  DEPLOYMENT COMPLETE");
         console.log("=================================================");
         console.log("MockUSDC:     ", address(usdc), " (pre-deployed)");
+        console.log("LMSRImpl:     ", lmsrImpl, " (clone source)");
         console.log("PositionNFT:  ", address(positionNFT));
         console.log("MarketFactory:", address(factory));
         console.log("Vault:        ", address(vault));
@@ -177,6 +202,7 @@ contract DeployScript is Script {
         console.log("\n--- deployments/fuji.json ---");
         console.log(string.concat('{ "network":"fuji","chainId":43113,'));
         console.log(string.concat('  "MockUSDC":"',        vm.toString(address(usdc)),        '",'));
+        console.log(string.concat('  "LMSRImpl":"',        vm.toString(lmsrImpl),             '",'));
         console.log(string.concat('  "PositionNFT":"',     vm.toString(address(positionNFT)), '",'));
         console.log(string.concat('  "MarketFactory":"',   vm.toString(address(factory)),     '",'));
         console.log(string.concat('  "Vault":"',           vm.toString(address(vault)),       '",'));
@@ -184,6 +210,7 @@ contract DeployScript is Script {
 
         console.log("\n--- .env additions ---");
         console.log(string.concat("USDC_ADDRESS=",          vm.toString(address(usdc))));
+        console.log(string.concat("LMSR_IMPL_ADDRESS=",     vm.toString(lmsrImpl)));
         console.log(string.concat("POSITION_NFT_ADDRESS=",  vm.toString(address(positionNFT))));
         console.log(string.concat("FACTORY_ADDRESS=",       vm.toString(address(factory))));
         console.log(string.concat("VAULT_ADDRESS=",         vm.toString(address(vault))));

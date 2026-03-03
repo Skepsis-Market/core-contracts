@@ -30,25 +30,38 @@ contract MarketLifecycleTest is Test {
         
         // Deploy USDC
         usdc = new MockUSDC();
-        
-        // Predict factory address at nonce 2
-        address predictedFactory = vm.computeCreateAddress(admin, 2);
-        
-        // Deploy PositionNFT with predicted factory address
-        positionNFT = new PositionNFT(predictedFactory);
-        
-        // Deploy factory (must be at nonce 2)
-        factory = new MarketFactory(
-            address(usdc),
-            address(positionNFT),
-            1000_000000, // minPoolBalance = $1,000
-            100, // maxBuckets
-            50, // defaultFeeBps = 0.5%
-            2000 // defaultProtocolFeeBps = 20%
-        );
-        
-        // Verify factory address matches prediction
-        require(address(factory) == predictedFactory, "Factory address mismatch");
+
+        // Deploy LMSRMarket implementation (EIP-1167 clone source)
+        {
+            uint256[] memory implRanges = new uint256[](2);
+            implRanges[0] = 0;
+            implRanges[1] = 1;
+            LMSRMarket.MarketMetadata memory implMeta;
+            address lmsrImpl = address(new LMSRMarket(
+                0, address(0), address(0), address(usdc), address(0),
+                1, 1, implRanges, 0, 0, implMeta
+            ));
+
+            // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
+            address predictedFactory = vm.computeCreateAddress(admin, 3);
+
+            // Deploy PositionNFT with predicted factory address
+            positionNFT = new PositionNFT(predictedFactory);
+
+            // Deploy factory (must be at nonce 3)
+            factory = new MarketFactory(
+                lmsrImpl,
+                address(usdc),
+                address(positionNFT),
+                1000_000000, // minPoolBalance = $1,000
+                100, // maxBuckets
+                50, // defaultFeeBps = 0.5%
+                2000 // defaultProtocolFeeBps = 20%
+            );
+
+            // Verify factory address matches prediction
+            require(address(factory) == predictedFactory, "Factory address mismatch");
+        }
 
         // Whitelist the market creator
         factory.setCreatorAllowance(creator, 50);

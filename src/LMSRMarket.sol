@@ -40,11 +40,12 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public constant MIN_ALPHA_FLOOR_BPS = 1000; // 10%
     address public constant PROTOCOL_FEE_COLLECTOR = 0x1234567890123456789012345678901234567890;
 
-    uint256 public immutable marketId;
-    address public immutable creator;
-    address public immutable factory;
-    address public immutable positionNFT;
-    IUSDC public immutable usdcToken;
+    uint256 public marketId;
+    address public creator;
+    address public factory;
+    address public positionNFT;
+    IUSDC public usdcToken;
+    bool private _initialized; // clone guard: prevents re-initialization on EIP-1167 clones
 
     uint256 public alpha;
     uint256 public alphaInitial;
@@ -206,6 +207,7 @@ contract LMSRMarket is ReentrancyGuard {
     error NoSurplusAvailable();
     error BiddingClosed();      // Betting deadline has passed
     error BetTooSmall();        // Below minimum bet size
+    error AlreadyInitialized(); // Clone guard: initialize() already called
 
     /// @notice Market metadata for initialization (packed to avoid stack too deep)
     struct MarketMetadata {
@@ -232,6 +234,32 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 _protocolFeeBps,
         MarketMetadata memory _metadata
     ) {
+        // Forward to initialize(). Supports both direct deployment and EIP-1167 clone pattern.
+        initialize(
+            _marketId, _creator, _factory, _usdcToken, _positionNFT,
+            _alpha, _poolBalance, _bucketRanges, _feeBps, _protocolFeeBps, _metadata
+        );
+    }
+
+    /// @notice Initialize market state. Called by the constructor on direct deployment,
+    ///         and by MarketFactory after Clones.clone() on the EIP-1167 proxy path.
+    ///         Can only be invoked once per contract instance (_initialized guard).
+    function initialize(
+        uint256 _marketId,
+        address _creator,
+        address _factory,
+        address _usdcToken,
+        address _positionNFT,
+        uint256 _alpha,
+        uint256 _poolBalance,
+        uint256[] memory _bucketRanges,
+        uint256 _feeBps,
+        uint256 _protocolFeeBps,
+        MarketMetadata memory _metadata
+    ) public {
+        if (_initialized) revert AlreadyInitialized();
+        _initialized = true;
+
         if (_alpha == 0) revert InvalidParameters();
         if (_poolBalance == 0) revert InvalidParameters();
         if (_bucketRanges.length < 2) revert InvalidParameters();
@@ -269,7 +297,6 @@ contract LMSRMarket is ReentrancyGuard {
 
         // Alpha is a creator-specified market design parameter (6 decimals).
         // Recommended heuristic: poolBalance / sqrt(bucketCount).
-        // alpha was already set from _alpha above — used directly.
         alphaInitial = alpha;
         alphaFinal = alpha;
         lastAlphaSyncTime = block.timestamp;
@@ -289,10 +316,8 @@ contract LMSRMarket is ReentrancyGuard {
                 upperBound: _bucketRanges[i + 1]
             });
 
-            // PHANTOM SHARES: exp((shares + PHANTOM) / α) 
-            // shares: 6 decimals, alpha: 6 decimals
-            // ratio = shares / alpha is unitless
-            // Need to scale to WAD for exp() which expects 18 decimals
+            // Phantom shares: exp((shares + PHANTOM) / alpha)
+            // shares and alpha both in 6 decimals; scale ratio to WAD for exp()
             uint256 q = initialShares + PHANTOM_SHARES; // 6 decimals
             uint256 ratio = (q * WAD) / alpha; // Scale to WAD: (6 dec * 18 dec) / 6 dec = 18 dec
             uint256 bucketExp = ratio.exp();

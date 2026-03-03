@@ -6,7 +6,7 @@ test = "test"
 solc_version = "0.8.24"
 evm_version = "cancun"
 optimizer = true
-optimizer_runs = 200
+optimizer_runs = 1      # minimizes deployment bytecode size (trades runtime gas for size)
 via_ir = true
 remappings = [
     "@prb/math/=lib/prb-math/src/",
@@ -14,11 +14,12 @@ remappings = [
 ]
 
 [profile.deploy]
-optimizer_runs = 1_000_000
+optimizer_runs = 1
 via_ir = true
 
 [rpc_endpoints]
-fuji = "${FUJI_RPC_URL}"
+fuji  = "${FUJI_RPC_URL}"
+local = "http://127.0.0.1:8545"
 
 [etherscan]
 fuji = { key = "${SNOWSCAN_API_KEY}", url = "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan" }

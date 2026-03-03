@@ -28,16 +28,12 @@ import {LMSRMarket} from "../src/LMSRMarket.sol";
 ///   2. Vault harvest: forge script script/Claim.s.sol:HarvestLPScript --broadcast
 contract ResolveScript is Script {
 
-    // ─── Configure ────────────────────────────────────────────────────────────
-    // Set RESOLUTION_VALUE to the real-world outcome in the market's value unit.
-    // Must be within [marketMin, marketMax].
-    // Leave as 0 for a dry run: prints market state without broadcasting.
-    uint256 constant RESOLUTION_VALUE = 0;   // e.g. 150 → $150 for AVAX/USD market
-    // ──────────────────────────────────────────────────────────────────────────
-
     function run() public {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address resolver = vm.envAddress("DEPLOYER_ADDRESS");
+
+        // Read resolution value from env. 0 = dry run.
+        uint256 RESOLUTION_VALUE = vm.envOr("RESOLUTION_VALUE", uint256(0));
 
         LMSRMarket market = LMSRMarket(vm.envAddress("MARKET_ADDRESS"));
 

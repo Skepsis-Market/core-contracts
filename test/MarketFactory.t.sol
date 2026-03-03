@@ -28,15 +28,25 @@ contract MarketFactoryTest is Test {
 
         usdc = new MockUSDC();
 
-        // Compute the address where factory will be deployed
-        // PositionNFT is next (nonce 1), then Factory (nonce 2)
-        address predictedFactoryAddress = vm.computeCreateAddress(admin, 2);
+        // Deploy LMSRMarket implementation (EIP-1167 clone source for all markets)
+        uint256[] memory implRanges = new uint256[](2);
+        implRanges[0] = 0;
+        implRanges[1] = 1;
+        LMSRMarket.MarketMetadata memory implMeta;
+        address lmsrImpl = address(new LMSRMarket(
+            0, address(0), address(0), address(usdc), address(0),
+            1, 1, implRanges, 0, 0, implMeta
+        ));
+
+        // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
+        address predictedFactoryAddress = vm.computeCreateAddress(admin, 3);
 
         // Deploy PositionNFT with predicted factory address
         positionNFT = new PositionNFT(predictedFactoryAddress);
 
         // Now deploy factory (should match predicted address)
         factory = new MarketFactory(
+            lmsrImpl,
             address(usdc),
             address(positionNFT),
             minPoolBalance,
