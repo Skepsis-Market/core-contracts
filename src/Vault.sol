@@ -12,24 +12,30 @@ import {LMSRMarket} from "./LMSRMarket.sol";
 ///
 /// ARCHITECTURE
 /// ═══════════════════════════════════════════════════════════════════
-///  LPs            → deposit()/redeem()         interact with the vault
+///  LPs            → deposit()/redeem()         interact with the vault (instant if liquid)
+///  LPs            → requestWithdrawal()        queue exit when capital is deployed
+///  LPs            → claimWithdrawal()          claim after capital returns from markets
 ///  Admin/Keeper   → deployTo(market, amount)   push capital into a market
 ///  Admin/Keeper   → harvestSurplus(market)     pull alpha-decay-released surplus back
 ///  Admin/Keeper   → harvestResolved(market)    pull post-resolution residual back
 ///
 /// ACCOUNTING (conservative NAV)
 /// ═══════════════════════════════════════════════════════════════════
-///  totalAssets() = vault liquid USDC
+///  totalAssets() = vault liquid USDC (excl. reserved for queue)
 ///               + Σ market.poolBalance()                 (active markets — LPs bear risk)
 ///               + Σ (poolBalance - winShares)            (resolved, unclaimed LP residual)
 ///
-///  Pre-resolution redemptions are capped at vault liquid USDC above the 20% buffer.
-///  Locked capital inside active markets is not force-liquidatable by redeemers.
+/// WITHDRAWAL QUEUE
+/// ═══════════════════════════════════════════════════════════════════
+///  When capital is deployed, LPs may not be able to withdraw instantly.
+///  They can requestWithdrawal() to join a FIFO queue.
+///  When capital returns (harvest/resolution), it's reserved for queued LPs first.
+///  Reserved capital cannot be deployed to new markets.
 ///
 /// SOLVENCY LAYERS
 /// ═══════════════════════════════════════════════════════════════════
 ///  Layer 1 – market-level  : each market enforces its own P-Z invariant (LMSRMarket.sol)
-///  Layer 2 – vault-level   : 20% of totalAssets always held as liquid USDC
+///  Layer 2 – vault-level   : 20% buffer on DEPLOYED capital (not idle)
 ///  Layer 3 – per-market cap: no single new deployment > 20% of totalAssets at time of call
 contract Vault is ERC4626, Ownable {
     using SafeERC20 for IERC20;
@@ -43,6 +49,21 @@ contract Vault is ERC4626, Ownable {
     uint256 public constant HEALTH_INJECT_THRESHOLD   = 120; // inject when below 1.20×
     uint256 public constant HEALTH_WITHDRAW_THRESHOLD = 150; // harvest when above 1.50×
 
+    // ─── Withdrawal Queue ────────────────────────────────────────────────────
+    /// @dev Option A (Lido-style): Shares burned at request time, USDC amount fixed.
+    ///      No cancellation allowed. LP stops earning fees immediately.
+    struct WithdrawalRequest {
+        address owner;           // LP who requested
+        uint256 assetsOwed;      // USDC owed (fixed at request time, shares already burned)
+        bool fulfilled;          // true when capital is reserved for this request
+        bool claimed;            // true when LP has claimed the USDC
+        uint256 requestTime;     // timestamp of request
+    }
+    WithdrawalRequest[] public withdrawalQueue;
+    uint256 public totalAssetsOwed;         // total USDC owed to queue (unfulfilled)
+    uint256 public reservedForWithdrawals;  // USDC earmarked for queue, cannot be deployed
+    uint256 public queueHead;               // first unfulfilled request index
+
     // ─── State ────────────────────────────────────────────────────────────────
     address public factory;
     address[] public markets;
@@ -55,6 +76,9 @@ contract Vault is ERC4626, Ownable {
     event CapitalDeployed(address indexed market, uint256 amount);
     event SurplusHarvested(address indexed market, uint256 amount);
     event ResolvedHarvested(address indexed market, uint256 amount);
+    event WithdrawalRequested(address indexed owner, uint256 indexed queueIndex, uint256 sharesBurned, uint256 assetsOwed);
+    event WithdrawalFulfilled(uint256 indexed queueIndex, uint256 assetsOwed);
+    event WithdrawalClaimed(address indexed owner, uint256 indexed queueIndex, uint256 assets);
 
     // ─── Errors ───────────────────────────────────────────────────────────────
     error MarketAlreadyRegistered();
@@ -64,6 +88,11 @@ contract Vault is ERC4626, Ownable {
     error NothingToHarvest();
     error MarketNotResolved();
     error NotFactory();
+    error InvalidQueueIndex();
+    error NotRequestOwner();
+    error WithdrawalNotFulfilled();
+    error WithdrawalAlreadyClaimed();
+    error InsufficientShares();
 
     // ─── Constructor ──────────────────────────────────────────────────────────
     constructor(
@@ -79,7 +108,7 @@ contract Vault is ERC4626, Ownable {
 
     /// @notice NAV = vault liquid + Σ market.poolBalance() (active) + Σ LP-residual (resolved).
     ///         Full poolBalance is counted for active markets: LPs accept market risk.
-    ///         Pre-resolution redemptions are still limited to vault liquid above the 20% buffer.
+    ///         Reserved-for-withdrawals is NOT subtracted from NAV (shares are still outstanding).
     function totalAssets() public view override returns (uint256 total) {
         total = IERC20(asset()).balanceOf(address(this));
         for (uint256 i = 0; i < markets.length; i++) {
@@ -87,15 +116,34 @@ contract Vault is ERC4626, Ownable {
         }
     }
 
-    /// @notice Liquid USDC available for withdrawal above the 20% buffer.
-    function liquidAvailable() public view returns (uint256) {
-        uint256 liquid = IERC20(asset()).balanceOf(address(this));
-        uint256 ta = totalAssets();
-        uint256 required = (ta * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
-        return liquid > required ? liquid - required : 0;
+    /// @notice Total value currently deployed in active/resolved markets.
+    function _totalMarketValue() internal view returns (uint256 total) {
+        for (uint256 i = 0; i < markets.length; i++) {
+            total += _claimableFromMarket(markets[i]);
+        }
     }
 
-    /// @notice Capped at the requesting owner's proportional share of liquid-available USDC.
+    /// @notice Liquid USDC available for INSTANT withdrawal (excludes reserved for queue).
+    ///         Buffer only applies to DEPLOYED capital, not idle USDC.
+    ///         If nothing deployed, 100% of liquid is available.
+    function liquidAvailable() public view returns (uint256) {
+        uint256 liquid = IERC20(asset()).balanceOf(address(this));
+        uint256 deployed = _totalMarketValue();
+        
+        // Reserved for queued withdrawals is not available
+        uint256 unavailable = reservedForWithdrawals;
+        
+        // Buffer only applies when capital is deployed
+        if (deployed > 0) {
+            uint256 buffer = (deployed * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
+            unavailable += buffer;
+        }
+        
+        return liquid > unavailable ? liquid - unavailable : 0;
+    }
+
+    /// @notice Capped at the requesting owner's proportional share of instant-liquid USDC.
+    ///         For larger withdrawals, use requestWithdrawal() to join the queue.
     function maxWithdraw(address owner) public view override returns (uint256) {
         uint256 ownerAssets = convertToAssets(balanceOf(owner));
         uint256 available   = liquidAvailable();
@@ -141,6 +189,94 @@ contract Vault is ERC4626, Ownable {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // LP: WITHDRAWAL QUEUE (Lido-style: burn at request, no cancellation)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Request a withdrawal when instant liquidity is insufficient.
+    ///         IMPORTANT: Shares are BURNED immediately. USDC owed is fixed at request time.
+    ///         LP stops earning fees/returns from this point. No cancellation allowed.
+    ///         When capital returns (via harvest), queued requests are fulfilled FIFO.
+    /// @param shares Amount of vault shares to burn for withdrawal
+    /// @return queueIndex Index in the withdrawal queue for tracking
+    function requestWithdrawal(uint256 shares) external returns (uint256 queueIndex) {
+        if (shares == 0) revert InsufficientShares();
+        if (balanceOf(msg.sender) < shares) revert InsufficientShares();
+        
+        // Calculate USDC owed at CURRENT exchange rate (crystallize exit value)
+        uint256 assetsOwed = convertToAssets(shares);
+        
+        // Burn shares immediately - LP stops earning from this point
+        _burn(msg.sender, shares);
+        
+        queueIndex = withdrawalQueue.length;
+        withdrawalQueue.push(WithdrawalRequest({
+            owner: msg.sender,
+            assetsOwed: assetsOwed,
+            fulfilled: false,
+            claimed: false,
+            requestTime: block.timestamp
+        }));
+        totalAssetsOwed += assetsOwed;
+        
+        emit WithdrawalRequested(msg.sender, queueIndex, shares, assetsOwed);
+    }
+
+    /// @notice Claim a fulfilled withdrawal request.
+    ///         Only callable after capital has returned and been reserved for this request.
+    /// @param queueIndex Index of your withdrawal request
+    function claimWithdrawal(uint256 queueIndex) external {
+        if (queueIndex >= withdrawalQueue.length) revert InvalidQueueIndex();
+        
+        WithdrawalRequest storage req = withdrawalQueue[queueIndex];
+        if (req.owner != msg.sender) revert NotRequestOwner();
+        if (!req.fulfilled) revert WithdrawalNotFulfilled();
+        if (req.claimed) revert WithdrawalAlreadyClaimed();
+        
+        uint256 payout = req.assetsOwed;
+        
+        // Update state
+        reservedForWithdrawals -= payout;
+        req.claimed = true;
+        
+        // Transfer USDC to owner
+        IERC20(asset()).safeTransfer(msg.sender, payout);
+        
+        emit WithdrawalClaimed(msg.sender, queueIndex, payout);
+    }
+
+    /// @notice Get withdrawal request details
+    function getWithdrawalRequest(uint256 queueIndex) external view returns (WithdrawalRequest memory) {
+        if (queueIndex >= withdrawalQueue.length) revert InvalidQueueIndex();
+        return withdrawalQueue[queueIndex];
+    }
+
+    /// @notice Get total pending (unfulfilled) withdrawal requests count
+    function pendingWithdrawalsCount() external view returns (uint256 count) {
+        for (uint256 i = queueHead; i < withdrawalQueue.length; i++) {
+            WithdrawalRequest storage req = withdrawalQueue[i];
+            if (!req.fulfilled && !req.claimed && req.assetsOwed > 0) {
+                count++;
+            }
+        }
+    }
+
+    /// @notice USDC available for new market deployments (excludes reserved + buffer)
+    function deployableCapital() public view returns (uint256) {
+        uint256 liquid = IERC20(asset()).balanceOf(address(this));
+        uint256 deployed = _totalMarketValue();
+        
+        // Cannot deploy reserved capital
+        uint256 unavailable = reservedForWithdrawals;
+        
+        // Buffer on deployed capital
+        if (deployed > 0) {
+            unavailable += (deployed * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
+        }
+        
+        return liquid > unavailable ? liquid - unavailable : 0;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // FACTORY: NEW MARKET FUNDING
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -148,16 +284,15 @@ contract Vault is ERC4626, Ownable {
     ///         factory during createMarket(). Registers the market and transfers seed USDC.
     /// @dev Only callable by the factory. The market's constructor already set poolBalance
     ///      as an accounting entry; this provides the actual USDC to match.
-    ///      Enforces the same guards as deployTo: liquid buffer + per-market cap.
+    ///      Enforces the same guards as deployTo: deployable capital + per-market cap.
     function fundNewMarket(address market, uint256 amount) external {
         if (msg.sender != factory) revert NotFactory();
         if (isRegistered[market]) revert MarketAlreadyRegistered();
 
         uint256 ta = totalAssets();
-        uint256 vaultLiquid = IERC20(asset()).balanceOf(address(this));
 
-        // Guard 1: enough liquid USDC
-        if (amount > vaultLiquid) revert InsufficientLiquidBuffer();
+        // Guard 1: must not exceed deployable capital (respects reserved + buffer)
+        if (amount > deployableCapital()) revert InsufficientLiquidBuffer();
 
         // Guard 2: per-market cap (skip when vault is empty)
         if (ta > 0) {
@@ -165,12 +300,6 @@ contract Vault is ERC4626, Ownable {
                 revert ExceedsMarketCap();
             }
         }
-
-        // Guard 3: 20% liquid buffer maintained after funding
-        // NAV is unchanged by the transfer (vault liquid ↓, market pool ↑ by same amount)
-        uint256 liquidAfter   = vaultLiquid - amount;
-        uint256 requiredAfter = (ta * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
-        if (liquidAfter < requiredAfter) revert InsufficientLiquidBuffer();
 
         // Register + track
         isRegistered[market] = true;
@@ -192,31 +321,23 @@ contract Vault is ERC4626, Ownable {
     /// @notice Deploy vault USDC into a registered market (increases its alpha depth).
     ///         Enforces:
     ///           1. Per-market cap: this deployment must not push market share above 20% of NAV.
-    ///           2. Liquid buffer: 20% of post-deployment NAV must remain liquid in vault.
+    ///           2. Deployable capital check: respects reserved-for-withdrawals and buffer.
     /// @param market  Target LMSRMarket (must be registered and have vault set as lpVault)
     /// @param amount  USDC amount to deploy (6 decimals)
     function deployTo(address market, uint256 amount) external onlyOwner {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
-        uint256 ta = totalAssets();
-        uint256 vaultLiquid = IERC20(asset()).balanceOf(address(this));
-
-        // Guard 1: we actually have the liquid USDC
-        if (amount > vaultLiquid) revert InsufficientLiquidBuffer();
+        // Guard 1: must not exceed deployable capital (respects reserved + buffer)
+        if (amount > deployableCapital()) revert InsufficientLiquidBuffer();
 
         // Guard 2: per-market cap (skip on first ever deployment when ta == 0)
+        uint256 ta = totalAssets();
         if (ta > 0) {
             uint256 newMarketDeployed = deployedTo[market] + amount;
             if ((newMarketDeployed * BPS_DENOMINATOR) / ta > MAX_MARKET_BPS) {
                 revert ExceedsMarketCap();
             }
         }
-
-        // Guard 3: 20% buffer still satisfied after deployment.
-        // NAV is unchanged (USDC moves vault→market, poolBalance increases by same amount).
-        uint256 liquidAfter   = vaultLiquid - amount;
-        uint256 requiredAfter = (ta * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
-        if (liquidAfter < requiredAfter) revert InsufficientLiquidBuffer();
 
         deployedTo[market] += amount;
         totalDeployed      += amount;
@@ -235,6 +356,7 @@ contract Vault is ERC4626, Ownable {
     ///         Permissionless: no loss possible — only claims what the market reports as
     ///         withdrawable (above requiredReserves = maxLiability + 2·alpha_current·ln(N)).
     ///         As alpha decays, requiredReserves shrink and this call can return more capital.
+    ///         Returned capital is first allocated to queued withdrawal requests (FIFO).
     function harvestSurplus(address market) external {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
@@ -246,11 +368,15 @@ contract Vault is ERC4626, Ownable {
         m.withdrawSurplus(address(this), surplus);
         uint256 harvested = IERC20(asset()).balanceOf(address(this)) - before;
 
+        // Process withdrawal queue with returned capital
+        _processWithdrawalQueue(harvested);
+
         emit SurplusHarvested(market, harvested);
     }
 
     /// @notice Pull LP residual from a resolved market back to the vault.
     ///         Permissionless. Market must be RESOLVED and not yet claimed.
+    ///         Returned capital is first allocated to queued withdrawal requests (FIFO).
     function harvestResolved(address market) external {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
@@ -261,6 +387,9 @@ contract Vault is ERC4626, Ownable {
         uint256 before = IERC20(asset()).balanceOf(address(this));
         m.withdrawLP();
         uint256 harvested = IERC20(asset()).balanceOf(address(this)) - before;
+
+        // Process withdrawal queue with returned capital
+        _processWithdrawalQueue(harvested);
 
         emit ResolvedHarvested(market, harvested);
     }
@@ -311,6 +440,43 @@ contract Vault is ERC4626, Ownable {
     // ═══════════════════════════════════════════════════════════════════════════
     // INTERNAL
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Process queued withdrawal requests with returned capital (FIFO).
+    ///         Called automatically when capital returns via harvest functions.
+    ///         Since shares are burned at request time, assetsOwed is already fixed.
+    /// @param returnedCapital Amount of USDC that just returned to the vault
+    function _processWithdrawalQueue(uint256 returnedCapital) internal {
+        if (returnedCapital == 0) return;
+        
+        uint256 remaining = returnedCapital;
+        
+        // Start from queueHead to skip already-processed requests
+        for (uint256 i = queueHead; i < withdrawalQueue.length && remaining > 0; i++) {
+            WithdrawalRequest storage req = withdrawalQueue[i];
+            
+            // Skip already fulfilled or claimed requests
+            if (req.fulfilled || req.claimed || req.assetsOwed == 0) {
+                // Advance queueHead past processed entries
+                if (i == queueHead) queueHead++;
+                continue;
+            }
+            
+            // Check if we have enough to fulfill this request
+            if (remaining >= req.assetsOwed) {
+                // Fully fulfill
+                req.fulfilled = true;
+                reservedForWithdrawals += req.assetsOwed;
+                totalAssetsOwed -= req.assetsOwed;
+                remaining -= req.assetsOwed;
+                
+                emit WithdrawalFulfilled(i, req.assetsOwed);
+            } else {
+                // Not enough capital for this request - stop here
+                // (No partial fulfillment - either fully funded or wait)
+                break;
+            }
+        }
+    }
 
     /// @notice Value the vault attributes to each market in totalAssets().
     ///         Active:   full poolBalance (LPs bear risk; capital returns at resolution)

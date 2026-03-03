@@ -1,0 +1,30 @@
+{
+  "network": "fuji",
+  "chainId": 43113,
+  "rpcUrl": "https://api.avax-test.network/ext/bc/C/rpc",
+  "explorer": "https://testnet.snowtrace.io",
+  "deployer": "PLACEHOLDER",
+  "contracts": {
+    "MockUSDC": "PLACEHOLDER",
+    "PositionNFT": "PLACEHOLDER",
+    "MarketFactory": "PLACEHOLDER",
+    "Vault": "PLACEHOLDER",
+    "SampleMarket": "PLACEHOLDER"
+  },
+  "config": {
+    "defaultFeeBps": 200,
+    "protocolFeeBps": 2000,
+    "minPoolBalance": 100000000,
+    "maxBuckets": 100,
+    "vaultSeedUsdc": 500000000000,
+    "sampleMarket": {
+      "name": "AVAX/USD on Apr 1 2026",
+      "minValue": 10,
+      "maxValue": 200,
+      "buckets": 19,
+      "poolUsdc": 10000000000,
+      "decayFinalBps": 3000,
+      "decayDurationDays": 30
+    }
+  }
+}

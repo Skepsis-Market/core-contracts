@@ -5,61 +5,95 @@ import {Script, console} from "forge-std/Script.sol";
 import {PositionNFT} from "../src/PositionNFT.sol";
 import {MarketFactory} from "../src/MarketFactory.sol";
 import {Vault} from "../src/Vault.sol";
+import {LMSRMarket} from "../src/LMSRMarket.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 
-/// @notice Deployment script for Arbitrum Sepolia testnet
-/// @dev Run with: forge script script/Deploy.s.sol:DeployScript --rpc-url $ARBITRUM_SEPOLIA_RPC --broadcast --verify
+/// @notice Full deployment + setup script for Avalanche Fuji testnet.
+///
+/// DEPLOYMENT ORDER (order matters — each step depends on the previous)
+/// ════════════════════════════════════════════════════════════════════
+///  1. MockUSDC        — testnet USDC, mint to deployer
+///  2. PositionNFT     — ERC-1155; needs factory address at construction
+///                       so we predict the factory address first
+///  3. MarketFactory   — deploys LMSRMarket instances; whitelist deployer
+///  4. Vault           — ERC-4626 LP vault; wire vault↔factory so they
+///                       can call each other (fundNewMarket / setVault)
+///  5. Seed Vault      — deployer deposits initial LP capital
+///  6. Create Market   — factory.createMarket() pulls seed from vault
+///                       automatically via fundNewMarket; alpha decay set
+///
+/// RUN
+/// ════════════════════════════════════════════════════════════════════
+///   cp .env.example .env   # fill PRIVATE_KEY, DEPLOYER_ADDRESS
+///
+///   forge script script/Deploy.s.sol:DeployScript \
+///     --rpc-url $FUJI_RPC_URL \
+///     --broadcast --verify \
+///     --chain-id 43113
 contract DeployScript is Script {
-    // Configuration parameters
-    uint256 constant DEFAULT_FEE_BPS = 200; // 2% total fee
-    uint256 constant PROTOCOL_FEE_BPS = 2000; // 20% of fees go to protocol (0.4% of volume)
-    uint256 constant MIN_POOL_BALANCE = 100_000000; // $100 USDC minimum
-    uint256 constant MAX_POOL_BALANCE = 1_000_000_000000; // $1M USDC maximum
-    uint256 constant MAX_BUCKETS = 100;
-    
-    // Deployment addresses (will be set during deployment)
+
+    // ─── Protocol config ─────────────────────────────────────────────────────
+    uint256 constant DEFAULT_FEE_BPS  = 200;         // 2% total fee per trade
+    uint256 constant PROTOCOL_FEE_BPS = 2000;        // 20% of fees → protocol (= 0.4% of volume)
+    uint256 constant MIN_POOL_BALANCE = 100_000000;  // $100 min seed per market
+    uint256 constant MAX_BUCKETS      = 100;
+
+    // ─── Vault initial LP seed ────────────────────────────────────────────────
+    uint256 constant VAULT_SEED_USDC  = 500_000_000000; // $500k
+
+    // ─── Sample market: AVAX/USD on Apr 1 2026 ───────────────────────────────
+    // 19 buckets of $10 wide covering $10–$200
+    uint256 constant MARKET_MIN       = 10;
+    uint256 constant MARKET_MAX       = 200;
+    uint256 constant MARKET_BUCKETS   = 19;
+    uint256 constant MARKET_POOL      = 10_000_000000;  // $10k from vault
+    // Alpha decay: linearly decay to 30% of initial alpha over 30 days
+    // Protects against late snipers as resolution approaches
+    uint256 constant DECAY_FINAL_BPS  = 3000;           // 30% of alphaInitial
+    uint256 constant DECAY_DURATION   = 30 days;
+
+    // ─── Runtime ─────────────────────────────────────────────────────────────
     address public deployer;
-    address public admin;
-    MockUSDC public usdc;
+    MockUSDC public usdc;          // Pre-deployed — read from USDC_ADDRESS env var
     PositionNFT public positionNFT;
     MarketFactory public factory;
     Vault public vault;
-    
+
     function setUp() public {
         deployer = vm.envAddress("DEPLOYER_ADDRESS");
-        admin = vm.envOr("ADMIN_ADDRESS", deployer); // Default to deployer if not set
     }
-    
+
     function run() public {
-        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
-        
-        vm.startBroadcast(deployerPrivateKey);
-        
-        console.log("=== Deploying to Arbitrum Sepolia ===");
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(pk);
+
+        console.log("=================================================");
+        console.log("  Deploying to Avalanche Fuji (chainId 43113)");
+        console.log("=================================================");
         console.log("Deployer:", deployer);
-        console.log("Admin:", admin);
-        
-        // Step 1: Deploy MockUSDC for testnet
-        console.log("\n1. Deploying MockUSDC...");
-        usdc = new MockUSDC();
-        console.log("MockUSDC deployed at:", address(usdc));
-        
-        // Mint initial test USDC to deployer (10M USDC)
-        usdc.mint(deployer, 10_000_000_000000);
-        console.log("Minted 10M USDC to deployer");
-        
-        // Step 2: Predict MarketFactory address for PositionNFT constructor
-        console.log("\n2. Computing MarketFactory address...");
+
+        // ── 1. Attach to existing MockUSDC ────────────────────────────────────
+        // MockUSDC is already deployed at USDC_ADDRESS — no need to redeploy.
+        // We mint extra test tokens to the deployer to cover vault seeding.
+        console.log("\n[1/5] Using existing MockUSDC...");
+        usdc = MockUSDC(vm.envAddress("USDC_ADDRESS"));
+        usdc.mint(deployer, VAULT_SEED_USDC + 100_000_000000); // vault seed + $100k trading buffer
+        console.log("  MockUSDC:    ", address(usdc));
+        console.log("  Deployer balance:", usdc.balanceOf(deployer) / 1e6, "USDC");
+
+        // ── 2. PositionNFT ────────────────────────────────────────────────────
+        // Must be constructed with the factory address it will trust.
+        // Predict factory address (next deployment after positionNFT).
+        console.log("\n[2/5] Deploying PositionNFT...");
         address predictedFactory = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
-        console.log("Predicted factory address:", predictedFactory);
-        
-        // Deploy PositionNFT with predicted factory address
-        console.log("\n3. Deploying PositionNFT...");
         positionNFT = new PositionNFT(predictedFactory);
-        console.log("PositionNFT deployed at:", address(positionNFT));
-        
-        // Step 4: Deploy MarketFactory
-        console.log("\n4. Deploying MarketFactory...");
+        console.log("  PositionNFT: ", address(positionNFT));
+        console.log("  Trusts factory (predicted):", predictedFactory);
+
+        // ── 3. MarketFactory ──────────────────────────────────────────────────
+        // Deploys LMSRMarket clones, enforces pool size limits and fee params.
+        // setCreatorAllowance gives the deployer permission to create markets.
+        console.log("\n[3/5] Deploying MarketFactory...");
         factory = new MarketFactory(
             address(usdc),
             address(positionNFT),
@@ -68,106 +102,136 @@ contract DeployScript is Script {
             DEFAULT_FEE_BPS,
             PROTOCOL_FEE_BPS
         );
-        console.log("MarketFactory deployed at:", address(factory));
-        
-        // Verify predicted address matches actual
-        if (address(factory) != predictedFactory) {
-            console.log("WARNING: Predicted address mismatch!");
-            console.log("Predicted:", predictedFactory);
-            console.log("Actual:", address(factory));
-        }
-
-        // Step 4b: Deploy Vault and wire up
-        console.log("\n4b. Deploying Vault...");
-        vault = new Vault(address(usdc), "Vault", "sVLT", deployer);
-        factory.setVault(address(vault));
-        vault.setFactory(address(factory));
-        console.log("Vault deployed at:", address(vault));
-
-        // Fund vault with deployer's USDC as initial LP
-        usdc.approve(address(vault), 100_000_000000); // $100k
-        vault.deposit(100_000_000000, deployer);
-        console.log("Deposited $100k to vault as initial LP");
-        
-        // Step 5: Create a test market (Bitcoin price on Feb 1, 2026)
-        console.log("\n5. Creating test market: Bitcoin price on Feb 1, 2026...");
-        
-        // Bitcoin price range: $40k to $140k, 10 buckets (using Sui-parity params)
-        uint256 minValue = 40_000;
-        uint256 maxValue = 140_000;
-        uint256 bucketCount = 10;
-        
-        uint256 poolBalance = 10_000_000000; // $10,000 USDC
-
-        // Whitelist deployer as a market creator
+        require(address(factory) == predictedFactory, "Factory address prediction mismatch");
         factory.setCreatorAllowance(deployer, 10);
+        console.log("  MarketFactory:", address(factory));
+        console.log("  Creator allowance: 10 markets for deployer");
+
+        // ── 4. Vault + wiring ─────────────────────────────────────────────────
+        // Vault is ERC-4626.  Two-way wiring is needed:
+        //   vault.setFactory(factory) → only factory can call vault.fundNewMarket()
+        //   factory.setVault(vault)   → factory pulls seed capital from vault on createMarket()
+        console.log("\n[4/5] Deploying Vault + wiring...");
+        vault = new Vault(address(usdc), "Skepsis Vault", "sVLT", deployer);
+        vault.setFactory(address(factory));
+        factory.setVault(address(vault));
+        console.log("  Vault:        ", address(vault));
+        console.log("  vault->factory wired");
+        console.log("  factory->vault wired");
+
+        // ── 5. Seed Vault + Create Market ─────────────────────────────────────
+        // Deployer becomes the first LP.  Any subsequent createMarket() call will
+        // pull from this pool (up to 20% of NAV per market, min 20% buffer kept).
+        console.log("\n[5/5] Seeding Vault and creating sample market...");
+        usdc.approve(address(vault), VAULT_SEED_USDC);
+        vault.deposit(VAULT_SEED_USDC, deployer);
+        console.log("  Deposited:    ", VAULT_SEED_USDC / 1e6, "USDC");
+        console.log("  LP shares:    ", vault.balanceOf(deployer));
+        console.log("  Vault NAV:    ", vault.totalAssets() / 1e6, "USDC");
+        console.log("  Deployable:   ", vault.deployableCapital() / 1e6, "USDC");
+
+        // factory.createMarket() internally calls vault.fundNewMarket(market, seedAmount)
+        // which transfers USDC from vault to the new LMSRMarket and registers it.
+        // Alpha decay is configured atomically by the factory using p.alphaFinal and
+        // p.decayDuration if both are non-zero.
+        console.log("\n  Creating sample market: AVAX/USD (Apr 1 2026)...");
+        console.log("  Range: $10 - $200 | Buckets: 19");
+
+        uint256 alphaInitial = MARKET_POOL / 3;
 
         MarketFactory.MarketParams memory p;
-        p.alpha          = poolBalance / 3; // sqrt(10) = 3
-        p.seedAmount     = poolBalance;
-        p.minValue       = minValue;
-        p.maxValue       = maxValue;
-        p.bucketCount    = bucketCount;
+        p.alpha          = alphaInitial;
+        p.seedAmount     = MARKET_POOL;
+        p.minValue       = MARKET_MIN;
+        p.maxValue       = MARKET_MAX;
+        p.bucketCount    = MARKET_BUCKETS;
         p.feeBps         = DEFAULT_FEE_BPS;
         p.protocolFeeBps = PROTOCOL_FEE_BPS;
+        p.alphaFinal     = (alphaInitial * DECAY_FINAL_BPS) / 10000;
+        p.decayDuration  = DECAY_DURATION;
 
-        address testMarket = factory.createMarket(p);
-        console.log("Test market created at:", testMarket);
-        console.log("Market ID: 0");
-        
+        address marketAddr = factory.createMarket(p);
+        LMSRMarket market  = LMSRMarket(marketAddr);
+
+        console.log("  Market:       ", marketAddr);
+        console.log("  Market ID:    ", market.marketId());
+        console.log("  poolBalance:  ", market.poolBalance() / 1e6, "USDC");
+        console.log("  alpha:        ", market.alpha());
+        console.log("  alphaFinal:   ", market.alphaFinal());
+        console.log("  decayDays:    ", market.decayDuration() / 1 days);
+        console.log("  lpVault:      ", market.lpVault());
+        console.log("  Vault deployable remaining:", vault.deployableCapital() / 1e6, "USDC");
+
         vm.stopBroadcast();
-        
-        // Step 6: Log deployment summary
-        console.log("\n=== Deployment Summary ===");
-        console.log("MockUSDC:", address(usdc));
-        console.log("PositionNFT:", address(positionNFT));
+
+        // ── Summary ───────────────────────────────────────────────────────────
+        console.log("\n=================================================");
+        console.log("  DEPLOYMENT COMPLETE");
+        console.log("=================================================");
+        console.log("MockUSDC:     ", address(usdc), " (pre-deployed)");
+        console.log("PositionNFT:  ", address(positionNFT));
         console.log("MarketFactory:", address(factory));
-        console.log("Test Market:", testMarket);
-        console.log("\nAdmin:", admin);
-        console.log("Default Fee (bps):", DEFAULT_FEE_BPS);
-        console.log("Protocol Fee Share (bps):", PROTOCOL_FEE_BPS);
-        
-        // Generate deployments.json data
-        console.log("\n=== Add to deployments.json ===");
-        console.log("{");
-        console.log('  "network": "arbitrum-sepolia",');
-        console.log('  "chainId": 421614,');
-        console.log('  "deployer": "', deployer, '",');
-        console.log('  "admin": "', admin, '",');
-        console.log('  "contracts": {');
-        console.log('    "MockUSDC": "', address(usdc), '",');
-        console.log('    "PositionNFT": "', address(positionNFT), '",');
-        console.log('    "MarketFactory": "', address(factory), '",');
-        console.log('    "TestMarket": "', testMarket, '"');
-        console.log('  },');
-        console.log('  "config": {');
-        console.log('    "defaultFeeBps":', DEFAULT_FEE_BPS, ',');
-        console.log('    "protocolFeeBps":', PROTOCOL_FEE_BPS, ',');
-        console.log('    "minPoolBalance":', MIN_POOL_BALANCE, ',');
-        console.log('    "maxPoolBalance":', MAX_POOL_BALANCE, ',');
-        console.log('    "maxBuckets":', MAX_BUCKETS);
-        console.log('  }');
-        console.log('}');
+        console.log("Vault:        ", address(vault));
+        console.log("SampleMarket: ", marketAddr);
+
+        console.log("\n--- deployments/fuji.json ---");
+        console.log(string.concat('{ "network":"fuji","chainId":43113,'));
+        console.log(string.concat('  "MockUSDC":"',        vm.toString(address(usdc)),        '",'));
+        console.log(string.concat('  "PositionNFT":"',     vm.toString(address(positionNFT)), '",'));
+        console.log(string.concat('  "MarketFactory":"',   vm.toString(address(factory)),     '",'));
+        console.log(string.concat('  "Vault":"',           vm.toString(address(vault)),       '",'));
+        console.log(string.concat('  "SampleMarket":"',    vm.toString(marketAddr),           '" }'));
+
+        console.log("\n--- .env additions ---");
+        console.log(string.concat("USDC_ADDRESS=",          vm.toString(address(usdc))));
+        console.log(string.concat("POSITION_NFT_ADDRESS=",  vm.toString(address(positionNFT))));
+        console.log(string.concat("FACTORY_ADDRESS=",       vm.toString(address(factory))));
+        console.log(string.concat("VAULT_ADDRESS=",         vm.toString(address(vault))));
+        console.log(string.concat("SAMPLE_MARKET_ADDRESS=", vm.toString(marketAddr)));
     }
 }
 
-/// @notice Script to verify all deployed contracts
-/// @dev Run after deployment with: forge script script/Deploy.s.sol:VerifyScript --rpc-url $ARBITRUM_SEPOLIA_RPC
+/// @notice Reads deployed addresses from .env and prints forge verify commands for Fuji.
+///
+/// RUN AFTER BROADCAST
+///   forge script script/Deploy.s.sol:VerifyScript --rpc-url $FUJI_RPC_URL
 contract VerifyScript is Script {
     function run() public view {
-        address usdcAddress = vm.envAddress("USDC_ADDRESS");
-        address positionNFTAddress = vm.envAddress("POSITION_NFT_ADDRESS");
-        address factoryAddress = vm.envAddress("FACTORY_ADDRESS");
-        
-        console.log("=== Contract Verification ===");
-        console.log("\nVerify on Arbiscan with:");
+        address usdcAddr    = vm.envAddress("USDC_ADDRESS");
+        address nftAddr     = vm.envAddress("POSITION_NFT_ADDRESS");
+        address factoryAddr = vm.envAddress("FACTORY_ADDRESS");
+        address vaultAddr   = vm.envAddress("VAULT_ADDRESS");
+
+        string memory flags = "--chain-id 43113 --watch";
+
+        console.log("=================================================");
+        console.log("  Fuji Verification (Routescan/Snowscan)");
+        console.log("=================================================");
+
         console.log("\n1. MockUSDC:");
-        console.log("forge verify-contract", usdcAddress, "src/mocks/MockUSDC.sol:MockUSDC --chain-id 421614 --watch");
-        
+        console.log(string.concat(
+            "forge verify-contract ", vm.toString(usdcAddr),
+            " src/mocks/MockUSDC.sol:MockUSDC ", flags
+        ));
+
         console.log("\n2. PositionNFT:");
-        console.log("forge verify-contract", positionNFTAddress, "src/PositionNFT.sol:PositionNFT --chain-id 421614 --watch");
-        
+        console.log(string.concat(
+            "forge verify-contract ", vm.toString(nftAddr),
+            " src/PositionNFT.sol:PositionNFT",
+            " --constructor-args $(cast abi-encode 'constructor(address)' ",
+            vm.toString(factoryAddr), ") ", flags
+        ));
+
         console.log("\n3. MarketFactory:");
-        console.log("forge verify-contract", factoryAddress, "src/MarketFactory.sol:MarketFactory --chain-id 421614 --watch");
+        console.log(string.concat(
+            "forge verify-contract ", vm.toString(factoryAddr),
+            " src/MarketFactory.sol:MarketFactory ", flags
+        ));
+
+        console.log("\n4. Vault:");
+        console.log(string.concat(
+            "forge verify-contract ", vm.toString(vaultAddr),
+            " src/Vault.sol:Vault ", flags
+        ));
     }
 }

@@ -18,9 +18,7 @@ optimizer_runs = 1_000_000
 via_ir = true
 
 [rpc_endpoints]
-arbitrum = "${ARBITRUM_RPC_URL}"
-arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
+fuji = "${FUJI_RPC_URL}"
 
 [etherscan]
-arbitrum = { key = "${ARBISCAN_API_KEY}" }
-arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}" }
+fuji = { key = "${SNOWSCAN_API_KEY}", url = "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan" }
