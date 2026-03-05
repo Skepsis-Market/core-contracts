@@ -38,7 +38,6 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public constant WAD = 1e18; // PRB-Math's WAD (18 decimals) for exp/ln operations
     uint256 public constant ALPHA_EPOCH_LENGTH = 30 minutes;
     uint256 public constant MIN_ALPHA_FLOOR_BPS = 1000; // 10%
-    address public constant PROTOCOL_FEE_COLLECTOR = 0x1234567890123456789012345678901234567890;
 
     uint256 public marketId;
     address public creator;
@@ -98,6 +97,25 @@ contract LMSRMarket is ReentrancyGuard {
     mapping(uint256 => uint256) private cachedBucketExp;  // exp(q_i/α) per bucket
     bool private sumExpDirty;
     uint256 private tradeCount;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NEW STORAGE — appended for EIP-1167 clone safety
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Configurable protocol fee recipient (replaces hardcoded constant)
+    address public protocolFeeCollector;                          // Slot 46
+
+    // Slots 47-53 reserved for future dispute resolution & cancellation
+    uint256[7] private __reservedForFutureUse;
+
+    /// @notice Cumulative LP fees that stayed in the contract (accounting transparency)
+    uint256 public lpFeesAccrued;                                 // Slot 54
+
+    /// @notice Maximum buckets allowed in a single range trade (0 = no limit)
+    uint256 public maxRangeWidth;                                 // Slot 55
+
+    /// @notice Index of the bucket currently holding the most shares
+    uint256 public currentMaxBucketId;                            // Slot 56
 
     event MarketCreated(
         uint256 indexed marketId,
@@ -193,6 +211,8 @@ contract LMSRMarket is ReentrancyGuard {
     event LPVaultSet(uint256 indexed marketId, address indexed vault);
     event LiquidityAdded(uint256 indexed marketId, address indexed provider, uint256 amountUSDC);
     event SurplusWithdrawn(uint256 indexed marketId, address indexed caller, address indexed recipient, uint256 amountUSDC);
+    event MarketEmergencyPaused(uint256 indexed marketId);
+    event MarketEmergencyUnpaused(uint256 indexed marketId);
 
     error InvalidParameters();
     error MarketNotActive();
@@ -208,6 +228,8 @@ contract LMSRMarket is ReentrancyGuard {
     error BiddingClosed();      // Betting deadline has passed
     error BetTooSmall();        // Below minimum bet size
     error AlreadyInitialized(); // Clone guard: initialize() already called
+    error MarketPaused();       // Market is emergency paused
+    error RangeTooWide();       // Range exceeds maxRangeWidth
 
     /// @notice Market metadata for initialization (packed to avoid stack too deep)
     struct MarketMetadata {
@@ -232,12 +254,14 @@ contract LMSRMarket is ReentrancyGuard {
         uint256[] memory _bucketRanges,
         uint256 _feeBps,
         uint256 _protocolFeeBps,
-        MarketMetadata memory _metadata
+        MarketMetadata memory _metadata,
+        address _protocolFeeCollector
     ) {
         // Forward to initialize(). Supports both direct deployment and EIP-1167 clone pattern.
         initialize(
             _marketId, _creator, _factory, _usdcToken, _positionNFT,
-            _alpha, _poolBalance, _bucketRanges, _feeBps, _protocolFeeBps, _metadata
+            _alpha, _poolBalance, _bucketRanges, _feeBps, _protocolFeeBps, _metadata,
+            _protocolFeeCollector
         );
     }
 
@@ -255,7 +279,8 @@ contract LMSRMarket is ReentrancyGuard {
         uint256[] memory _bucketRanges,
         uint256 _feeBps,
         uint256 _protocolFeeBps,
-        MarketMetadata memory _metadata
+        MarketMetadata memory _metadata,
+        address _protocolFeeCollector
     ) public {
         if (_initialized) revert AlreadyInitialized();
         _initialized = true;
@@ -287,6 +312,7 @@ contract LMSRMarket is ReentrancyGuard {
         scheduledResolutionTime = _metadata.scheduledResolutionTime;
         minBetSize = _metadata.minBetSize;
         creationTime = block.timestamp;
+        protocolFeeCollector = _protocolFeeCollector;
 
         bucketCount = _bucketRanges.length - 1;
 
@@ -421,6 +447,32 @@ contract LMSRMarket is ReentrancyGuard {
         emit LPVaultSet(marketId, _lpVault);
     }
 
+    /// @notice Emergency pause — blocks all trading, claims, and LP operations
+    /// @dev Only callable by the factory contract (controlled by owner/multisig)
+    function emergencyPause() external {
+        if (msg.sender != factory) revert Unauthorized();
+        if (status == MarketStatus.RESOLVED) revert MarketAlreadyResolved();
+        if (status == MarketStatus.EMERGENCY_PAUSED) revert MarketPaused();
+        status = MarketStatus.EMERGENCY_PAUSED;
+        emit MarketEmergencyPaused(marketId);
+    }
+
+    /// @notice Unpause an emergency-paused market, returning it to ACTIVE
+    /// @dev Only callable by the factory contract
+    function emergencyUnpause() external {
+        if (msg.sender != factory) revert Unauthorized();
+        if (status != MarketStatus.EMERGENCY_PAUSED) revert InvalidParameters();
+        status = MarketStatus.ACTIVE;
+        emit MarketEmergencyUnpaused(marketId);
+    }
+
+    /// @notice Set max range width (factory-only, called post-initialize)
+    /// @param _maxRangeWidth Max buckets per range trade (0 = no limit)
+    function setMaxRangeWidth(uint256 _maxRangeWidth) external {
+        if (msg.sender != factory) revert Unauthorized();
+        maxRangeWidth = _maxRangeWidth;
+    }
+
     function addLiquidity(uint256 amountUSDC) external nonReentrant onlyActive {
         if (amountUSDC == 0) revert InvalidParameters();
         if (msg.sender != creator && msg.sender != lpVault) revert Unauthorized();
@@ -440,6 +492,9 @@ contract LMSRMarket is ReentrancyGuard {
     {
         if (recipient == address(0)) revert InvalidParameters();
         if (msg.sender != creator && msg.sender != lpVault) revert Unauthorized();
+
+        // Lazy refresh maxLiability before calculating surplus to avoid over-locking
+        _refreshMaxLiabilityInternal();
 
         uint256 withdrawable = getWithdrawableSurplus();
         if (withdrawable == 0) revert NoSurplusAvailable();
@@ -485,8 +540,8 @@ contract LMSRMarket is ReentrancyGuard {
     }
 
     function _routeProtocolFee(uint256 protocolFee) internal {
-        if (protocolFee > 0) {
-            usdcToken.transfer(PROTOCOL_FEE_COLLECTOR, protocolFee);
+        if (protocolFee > 0 && protocolFeeCollector != address(0)) {
+            usdcToken.transfer(protocolFeeCollector, protocolFee);
         }
     }
 
@@ -615,80 +670,10 @@ contract LMSRMarket is ReentrancyGuard {
         onlyActive
         returns (uint256 sharesMinted)
     {
-        _syncAlpha();
-
-        if (bucketId >= bucketCount) revert InvalidBucket();
-        if (amountUSDC == 0) revert InvalidParameters();
-        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
-        if (minBetSize != 0 && amountUSDC < minBetSize) revert BetTooSmall();
-        
-        uint256 C_before = _calculateCostFunction(); // 6 decimals
-        
-        // Sui-style sparse cache: O(1) instead of O(n) loop
-        uint256 sumOther = _getSumOther(bucketId);
-        
-        uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
-        uint256 netCostUSDC = amountUSDC - feesUSDC; // 6 decimals
-        
-        uint256 C_new = C_before + netCostUSDC; // 6 decimals
-        uint256 ratio = (C_new * WAD) / alpha; // Scale to WAD
-        uint256 expCNewOverAlpha = ratio.exp();
-        
-        uint256 innerTerm = expCNewOverAlpha - sumOther;
-        uint256 lnInnerTerm = innerTerm.ln(); // Returns WAD (18 decimals)
-        uint256 newSharesWithPhantom = (alpha * lnInnerTerm) / WAD; // 6 decimals
-        // Subtract phantom shares to get actual shares  
-        uint256 newShares = newSharesWithPhantom - PHANTOM_SHARES; // 6 decimals
-        
-        sharesMinted = newShares - buckets[bucketId].shares; // 6 decimals
-        
-        if (sharesMinted < minSharesOut) revert InvalidParameters();
-        
-        // Solvency check: newShares cannot exceed poolBalance AFTER adding net cost
-        uint256 newPoolBalance = poolBalance + netCostUSDC;
-        if (newShares > newPoolBalance + SOLVENCY_DUST) {
-            revert SolvencyViolation();
-        }
-        
-        buckets[bucketId].shares = newShares;
-
-        if (newShares > maxLiability) {
-            maxLiability = newShares;
-        }
-        
-        _updateSumExpIncremental(bucketId, newShares);
-        
-        // FIXED ALPHA: No update after trade (matches Sui, prevents arbitrage)
-        
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
-        
-        poolBalance += netCostUSDC;
-        feesCollectedLP += lpFee;
-        feesCollectedProtocol += protocolFee;
-        totalVolume += amountUSDC;
-        
-        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
-        _routeProtocolFee(protocolFee);
-        
-        uint256 newPrice = _calculatePrice(bucketId);
-
-        if (_positionTokenEnabled()) {
-            IPositionNFT(positionNFT).mint(msg.sender, _tokenIdForBucket(bucketId), sharesMinted);
-        }
-
-        emit SharesPurchased(marketId, msg.sender, bucketId, amountUSDC, sharesMinted, newPrice);
+        return _executeBuy(bucketId, amountUSDC, minSharesOut);
     }
 
     /// @notice Buy shares with EIP-2612 permit signature (gasless approval)
-    /// @param bucketId The bucket to buy shares in
-    /// @param amountUSDC Amount of USDC to spend (6 decimals)
-    /// @param minSharesOut Minimum shares to receive for slippage protection
-    /// @param deadline Permit signature expiration timestamp
-    /// @param v ECDSA signature v component
-    /// @param r ECDSA signature r component
-    /// @param s ECDSA signature s component
-    /// @return sharesMinted Number of shares minted (18 decimals WAD)
     function buySharesWithPermit(
         uint256 bucketId,
         uint256 amountUSDC,
@@ -698,72 +683,68 @@ contract LMSRMarket is ReentrancyGuard {
         bytes32 r,
         bytes32 s
     ) external nonReentrant onlyActive returns (uint256 sharesMinted) {
+        IERC20Permit(address(usdcToken)).permit(
+            msg.sender, address(this), amountUSDC, deadline, v, r, s
+        );
+        return _executeBuy(bucketId, amountUSDC, minSharesOut);
+    }
+
+    /// @dev Shared buy logic for buyShares and buySharesWithPermit
+    function _executeBuy(uint256 bucketId, uint256 amountUSDC, uint256 minSharesOut)
+        internal
+        returns (uint256 sharesMinted)
+    {
         _syncAlpha();
 
         if (bucketId >= bucketCount) revert InvalidBucket();
         if (amountUSDC == 0) revert InvalidParameters();
-        
-        // Execute permit for gasless approval
-        IERC20Permit(address(usdcToken)).permit(
-            msg.sender,
-            address(this),
-            amountUSDC,
-            deadline,
-            v,
-            r,
-            s
-        );
-        
-        // Shared buy logic - same as buyShares
-        uint256 C_before = _calculateCostFunction(); // 6 decimals
-        
-        // Sui-style sparse cache: O(1) instead of O(n) loop
+        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
+        if (minBetSize != 0 && amountUSDC < minBetSize) revert BetTooSmall();
+
+        uint256 C_before = _calculateCostFunction();
         uint256 sumOther = _getSumOther(bucketId);
-        
+
         uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
-        uint256 netCostUSDC = amountUSDC - feesUSDC; // 6 decimals
-        
-        uint256 C_new = C_before + netCostUSDC; // 6 decimals
-        uint256 ratio = (C_new * WAD) / alpha; // Scale to WAD
+        uint256 netCostUSDC = amountUSDC - feesUSDC;
+
+        uint256 C_new = C_before + netCostUSDC;
+        uint256 ratio = (C_new * WAD) / alpha;
         uint256 expCNewOverAlpha = ratio.exp();
-        
+
         uint256 innerTerm = expCNewOverAlpha - sumOther;
-        uint256 lnInnerTerm = innerTerm.ln(); // Returns WAD (18 decimals)
-        uint256 newSharesWithPhantom = (alpha * lnInnerTerm) / WAD; // 6 decimals
-        // Subtract phantom shares to get actual shares
-        uint256 newShares = newSharesWithPhantom - PHANTOM_SHARES; // 6 decimals
-        
-        sharesMinted = newShares - buckets[bucketId].shares; // 6 decimals
-        
+        uint256 lnInnerTerm = innerTerm.ln();
+        uint256 newSharesWithPhantom = (alpha * lnInnerTerm) / WAD;
+        uint256 newShares = newSharesWithPhantom - PHANTOM_SHARES;
+
+        sharesMinted = newShares - buckets[bucketId].shares;
         if (sharesMinted < minSharesOut) revert InvalidParameters();
-        
+
         // Solvency check: newShares cannot exceed poolBalance AFTER adding net cost
         uint256 newPoolBalance = poolBalance + netCostUSDC;
         if (newShares > newPoolBalance + SOLVENCY_DUST) {
             revert SolvencyViolation();
         }
-        
-        buckets[bucketId].shares = newShares;
 
+        buckets[bucketId].shares = newShares;
         if (newShares > maxLiability) {
             maxLiability = newShares;
+            currentMaxBucketId = bucketId;
         }
-        
+
         _updateSumExpIncremental(bucketId, newShares);
-        
-        // FIXED ALPHA: No update after trade (matches Sui, prevents arbitrage)
-        
+
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
-        
+
         poolBalance += netCostUSDC;
         feesCollectedLP += lpFee;
+        lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
         totalVolume += amountUSDC;
-        
+
         usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
         _routeProtocolFee(protocolFee);
-        
+
         uint256 newPrice = _calculatePrice(bucketId);
 
         if (_positionTokenEnabled()) {
@@ -785,11 +766,13 @@ contract LMSRMarket is ReentrancyGuard {
     /// @param amountUSDC Maximum USDC to spend (6 decimals)
     /// @param minSharesOut Minimum shares to receive (slippage protection)
     /// @return shares Number of shares received (covers ALL buckets in range)
+    /// @param targetShares FE-provided quote hint (0 = binary search, >0 = try fast path first)
     function buySharesRange(
         uint256 rangeLower,
         uint256 rangeUpper,
         uint256 amountUSDC,
-        uint256 minSharesOut
+        uint256 minSharesOut,
+        uint256 targetShares
     ) external nonReentrant onlyActive returns (uint256 shares) {
         _syncAlpha();
         if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
@@ -799,21 +782,37 @@ contract LMSRMarket is ReentrancyGuard {
         // STEP 1: Validate and convert range to buckets (ONCE)
         // ─────────────────────────────────────────────────────────────────────
         (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
-        
+
         // ─────────────────────────────────────────────────────────────────────
         // STEP 2: Calculate fees and net amount
         // ─────────────────────────────────────────────────────────────────────
         uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
         uint256 netAmount = amountUSDC - feesUSDC;
-        
+
         // ─────────────────────────────────────────────────────────────────────
-        // STEP 3: Binary search for max affordable shares
+        // STEP 3: Fast path — skip binary search when FE provides pre-calculated quote
         // ─────────────────────────────────────────────────────────────────────
         uint256 actualCost;
         uint256 newSumExp;
-        (shares, actualCost, newSumExp) = _findMaxSharesForRange(
-            startBucket, endBucket, netAmount
-        );
+
+        if (targetShares > 0) {
+            (uint256 cost, uint256 newSum) = _calculateRangeBuyCost(startBucket, endBucket, targetShares);
+            if (cost <= netAmount) {
+                // Quote is affordable — skip binary search (Sui parity).
+                // User's slippage protection is via minSharesOut, not budget utilization.
+                shares = targetShares;
+                actualCost = cost;
+                newSumExp = newSum;
+            }
+            // If cost > netAmount, quote is stale/too expensive → fall through to binary search
+        }
+
+        // Fall through to binary search only if fast path didn't succeed
+        if (shares == 0) {
+            (shares, actualCost, newSumExp) = _findMaxSharesForRange(
+                startBucket, endBucket, netAmount
+            );
+        }
         
         if (shares < minSharesOut) revert InvalidParameters();
         
@@ -829,10 +828,12 @@ contract LMSRMarket is ReentrancyGuard {
         
         // Update fees and volume
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        feesCollectedLP += feesUSDC - protocolFee;
+        uint256 lpFee = feesUSDC - protocolFee;
+        feesCollectedLP += lpFee;
+        lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
         totalVolume += amountUSDC;
-        
+
         // ─────────────────────────────────────────────────────────────────────
         // STEP 6: External interaction LAST (checks-effects-interactions)
         // ─────────────────────────────────────────────────────────────────────
@@ -902,25 +903,34 @@ contract LMSRMarket is ReentrancyGuard {
         
         // Update fees and volume
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        feesCollectedLP += feesUSDC - protocolFee;
+        uint256 lpFee = feesUSDC - protocolFee;
+        feesCollectedLP += lpFee;
+        lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
         totalVolume += grossPayout;
-        
-        // Solvency check after sell
-        _checkSolvency();
-        
+
+        // Solvency check: O(1) fast path unless we sold from the max bucket
+        bool affectsMax = false;
+        for (uint256 b = startBucket; b <= endBucket; b++) {
+            if (b == currentMaxBucketId) { affectsMax = true; break; }
+        }
+        if (affectsMax) {
+            _rescanMaxLiability();
+        } else {
+            _checkSolvency();
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         // STEP 5: External interaction LAST
         // ─────────────────────────────────────────────────────────────────────
         if (_positionTokenEnabled()) {
-            // Burn ONE unified range token  
             IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(startBucket, endBucket), sharesToSell);
         }
 
         _routeProtocolFee(protocolFee);
 
         usdcToken.transfer(msg.sender, payoutUSDC);
-        
+
         emit RangeSharesSold(marketId, msg.sender, startBucket, endBucket, sharesToSell, payoutUSDC);
     }
 
@@ -1012,6 +1022,11 @@ contract LMSRMarket is ReentrancyGuard {
         // Market-relative indexing
         startBucket = (lower - marketMin) / bucketWidth;
         endBucket = ((upper - 1) - marketMin) / bucketWidth; // -1 makes upper exclusive
+
+        // Enforce max range width if configured
+        if (maxRangeWidth > 0 && (endBucket - startBucket + 1) > maxRangeWidth) {
+            revert RangeTooWide();
+        }
     }
 
     /// @dev Binary search to find max affordable shares for a range
@@ -1024,27 +1039,43 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 maxCost
     ) internal view returns (uint256 shares, uint256 actualCost, uint256 newSumExp) {
         if (maxCost == 0) return (0, 0, cachedSumExp);
-        
+
         // Binary search bounds
         uint256 low = 0;
         uint256 high = poolBalance; // Solvency cap
-        
+
         uint256 bestShares = 0;
         uint256 bestCost = 0;
         uint256 bestSumExp = cachedSumExp;
-        
-        // 30 iterations gives precision to 1 part in 10^9
-        for (uint256 i = 0; i < 30; i++) {
+
+        // 20 iterations gives precision to 1 part in 10^6 (sub-cent for 6-decimal USDC)
+        for (uint256 i = 0; i < 20; i++) {
             if (low > high) break;
-            
+
             uint256 mid = (low + high) / 2;
             if (mid == 0) {
                 low = 1;
                 continue;
             }
-            
+
+            // Solvency pre-check: cheaper storage reads before expensive exp() calls.
+            // If adding `mid` shares would exceed poolBalance + maxCost (max possible pool)
+            // for any bucket, skip this iteration entirely.
+            bool solvencyOk = true;
+            uint256 maxPool = poolBalance + maxCost + SOLVENCY_DUST;
+            for (uint256 b = startBucket; b <= endBucket; b++) {
+                if (buckets[b].shares + mid > maxPool) {
+                    solvencyOk = false;
+                    break;
+                }
+            }
+            if (!solvencyOk) {
+                high = mid - 1;
+                continue;
+            }
+
             (uint256 cost, uint256 newSum) = _calculateRangeBuyCost(startBucket, endBucket, mid);
-            
+
             if (cost <= maxCost) {
                 // Affordable - track as best and try higher
                 if (mid > bestShares) {
@@ -1052,17 +1083,20 @@ contract LMSRMarket is ReentrancyGuard {
                     bestCost = cost;
                     bestSumExp = newSum;
                 }
-                
+
                 // Early exit if we're using 99.5%+ of budget
                 if (cost >= (maxCost * 995) / 1000) break;
-                
+
                 low = mid + 1;
             } else {
                 // Too expensive - try lower
                 high = mid - 1;
             }
+
+            // Convergence exit: sub-cent precision ($0.001 with 6 decimals)
+            if (high - low < 1000) break;
         }
-        
+
         return (bestShares, bestCost, bestSumExp);
     }
 
@@ -1162,6 +1196,7 @@ contract LMSRMarket is ReentrancyGuard {
 
             if (newShares > maxLiability) {
                 maxLiability = newShares;
+                currentMaxBucketId = b;
             }
             
             // Update per-bucket exp cache
@@ -1211,15 +1246,61 @@ contract LMSRMarket is ReentrancyGuard {
         }
     }
 
-    /// @notice Check that all buckets satisfy solvency invariant
-    /// @dev Reverts if any bucket's shares exceed poolBalance + SOLVENCY_DUST
+    /// @notice O(1) solvency check — only validates the current max bucket
     function _checkSolvency() internal view {
+        if (buckets[currentMaxBucketId].shares > poolBalance + SOLVENCY_DUST) {
+            revert SolvencyViolation();
+        }
+    }
+
+    /// @notice Full rescan — finds the new max bucket and checks solvency for all
+    /// @dev Called when selling from the current max bucket (rare) or on explicit refresh
+    function _rescanMaxLiability() internal {
+        uint256 currentMax = 0;
+        uint256 maxBucket = 0;
         for (uint256 i = 0; i < bucketCount; i++) {
-            // Solvency check on actual shares (phantom shares don't count)
-            // shares already in 6 decimals, same as poolBalance
             if (buckets[i].shares > poolBalance + SOLVENCY_DUST) {
                 revert SolvencyViolation();
             }
+            if (buckets[i].shares > currentMax) {
+                currentMax = buckets[i].shares;
+                maxBucket = i;
+            }
+        }
+        maxLiability = currentMax;
+        currentMaxBucketId = maxBucket;
+    }
+
+    /// @dev Internal refresh — only decreases maxLiability
+    function _refreshMaxLiabilityInternal() internal {
+        uint256 currentMax = 0;
+        uint256 maxBucket = 0;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            if (buckets[i].shares > currentMax) {
+                currentMax = buckets[i].shares;
+                maxBucket = i;
+            }
+        }
+        if (currentMax < maxLiability) {
+            maxLiability = currentMax;
+            currentMaxBucketId = maxBucket;
+        }
+    }
+
+    /// @notice Permissionless refresh of maxLiability to current actual maximum
+    /// @dev Useful before harvesting surplus — ensures reserves aren't over-locked
+    function refreshMaxLiability() external {
+        uint256 currentMax = 0;
+        uint256 maxBucket = 0;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            if (buckets[i].shares > currentMax) {
+                currentMax = buckets[i].shares;
+                maxBucket = i;
+            }
+        }
+        if (currentMax < maxLiability) {
+            maxLiability = currentMax;
+            currentMaxBucketId = maxBucket;
         }
     }
 
@@ -1287,6 +1368,32 @@ contract LMSRMarket is ReentrancyGuard {
         returnUSDC = C_before - C_after; // Already 6 decimals
     }
 
+    /// @notice Preview gross return for selling range shares (view — no state change)
+    /// @param rangeLower Lower bound in value space (inclusive)
+    /// @param rangeUpper Upper bound in value space (exclusive)
+    /// @param sharesToSell Number of shares to sell from each bucket in range
+    /// @return grossReturn Gross USDC return before fees
+    /// @return netReturn Net USDC return after fees
+    /// @return feesUSDC Total fees deducted
+    function calculateReturnForRangeShares(
+        uint256 rangeLower,
+        uint256 rangeUpper,
+        uint256 sharesToSell
+    ) external view returns (uint256 grossReturn, uint256 netReturn, uint256 feesUSDC) {
+        (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
+
+        if (sharesToSell == 0) return (0, 0, 0);
+
+        // Validate all buckets have enough shares
+        for (uint256 b = startBucket; b <= endBucket; b++) {
+            if (sharesToSell > buckets[b].shares) revert InsufficientBalance();
+        }
+
+        (grossReturn, ) = _calculateRangeSellReturn(startBucket, endBucket, sharesToSell);
+        feesUSDC = (grossReturn * feeBps) / 10000;
+        netReturn = grossReturn - feesUSDC;
+    }
+
     function sellShares(uint256 bucketId, uint256 sharesToSell, uint256 minPayoutOut)
         external
         nonReentrant
@@ -1339,11 +1446,16 @@ contract LMSRMarket is ReentrancyGuard {
         
         poolBalance -= payoutUSDC;
         feesCollectedLP += lpFee;
+        lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
         totalVolume += grossPayoutUSDC;
         
-        // Solvency check: ensure no bucket exceeds poolBalance after sell
-        _checkSolvency();
+        // Solvency check: O(1) for common case, O(n) rescan when selling from max bucket
+        if (bucketId == currentMaxBucketId) {
+            _rescanMaxLiability();
+        } else {
+            _checkSolvency();
+        }
 
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForBucket(bucketId), sharesToSell);

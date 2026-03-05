@@ -98,13 +98,13 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         out = market.buyShares(1, 300_000000, 0);
         _logScenarioState("2b", market, 2, "single:b1", 300_000000, out);
 
-        out = market.buySharesRange(0, 2, 400_000000, 0); // 2-bucket range
+        out = market.buySharesRange(0, 2, 400_000000, 0, 0); // 2-bucket range
         _logScenarioState("2b", market, 3, "range:0-2(len2)", 400_000000, out);
 
         out = market.buyShares(1, 500_000000, 0);
         _logScenarioState("2b", market, 4, "single:b1", 500_000000, out);
 
-        out = market.buySharesRange(0, 2, 350_000000, 0);
+        out = market.buySharesRange(0, 2, 350_000000, 0, 0);
         _logScenarioState("2b", market, 5, "range:0-2(len2)", 350_000000, out);
 
         vm.stopPrank();
@@ -129,19 +129,19 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         out = market.buyShares(1, 200_000000, 0);
         _logScenarioState("5b", market, 1, "single:b1", 200_000000, out);
 
-        out = market.buySharesRange(1, 3, 250_000000, 0); // len 2
+        out = market.buySharesRange(1, 3, 250_000000, 0, 0); // len 2
         _logScenarioState("5b", market, 2, "range:1-3(len2)", 250_000000, out);
 
-        out = market.buySharesRange(0, 3, 300_000000, 0); // len 3
+        out = market.buySharesRange(0, 3, 300_000000, 0, 0); // len 3
         _logScenarioState("5b", market, 3, "range:0-3(len3)", 300_000000, out);
 
         out = market.buyShares(4, 350_000000, 0);
         _logScenarioState("5b", market, 4, "single:b4", 350_000000, out);
 
-        out = market.buySharesRange(1, 5, 400_000000, 0); // len 4
+        out = market.buySharesRange(1, 5, 400_000000, 0, 0); // len 4
         _logScenarioState("5b", market, 5, "range:1-5(len4)", 400_000000, out);
 
-        out = market.buySharesRange(0, 5, 500_000000, 0); // len 5
+        out = market.buySharesRange(0, 5, 500_000000, 0, 0); // len 5
         _logScenarioState("5b", market, 6, "range:0-5(len5)", 500_000000, out);
 
         vm.stopPrank();
@@ -166,11 +166,11 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         _logScenarioStateWithAlpha(scenario, market, 1, "single:b1", 200_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(1, 3, 250_000000, 0); // len 2
+        out = market.buySharesRange(1, 3, 250_000000, 0, 0); // len 2
         _logScenarioStateWithAlpha(scenario, market, 2, "range:1-3(len2)", 250_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(0, 3, 300_000000, 0); // len 3
+        out = market.buySharesRange(0, 3, 300_000000, 0, 0); // len 3
         _logScenarioStateWithAlpha(scenario, market, 3, "range:0-3(len3)", 300_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
@@ -178,11 +178,11 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         _logScenarioStateWithAlpha(scenario, market, 4, "single:b4", 350_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(1, 5, 400_000000, 0); // len 4
+        out = market.buySharesRange(1, 5, 400_000000, 0, 0); // len 4
         _logScenarioStateWithAlpha(scenario, market, 5, "range:1-5(len4)", 400_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(0, 5, 500_000000, 0); // len 5
+        out = market.buySharesRange(0, 5, 500_000000, 0, 0); // len 5
         _logScenarioStateWithAlpha(scenario, market, 6, "range:0-5(len5)", 500_000000, out);
 
         vm.stopPrank();
@@ -208,22 +208,22 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         out = market.buyShares(2, 150_000000, 0);
         _logScenarioState("10b", market, 1, "single:b2", 150_000000, out);
 
-        out = market.buySharesRange(2, 4, 180_000000, 0); // len 2
+        out = market.buySharesRange(2, 4, 180_000000, 0, 0); // len 2
         _logScenarioState("10b", market, 2, "range:2-4(len2)", 180_000000, out);
 
-        out = market.buySharesRange(4, 7, 220_000000, 0); // len 3
+        out = market.buySharesRange(4, 7, 220_000000, 0, 0); // len 3
         _logScenarioState("10b", market, 3, "range:4-7(len3)", 220_000000, out);
 
-        out = market.buySharesRange(1, 5, 260_000000, 0); // len 4
+        out = market.buySharesRange(1, 5, 260_000000, 0, 0); // len 4
         _logScenarioState("10b", market, 4, "range:1-5(len4)", 260_000000, out);
 
-        out = market.buySharesRange(3, 8, 300_000000, 0); // len 5
+        out = market.buySharesRange(3, 8, 300_000000, 0, 0); // len 5
         _logScenarioState("10b", market, 5, "range:3-8(len5)", 300_000000, out);
 
         out = market.buyShares(9, 350_000000, 0);
         _logScenarioState("10b", market, 6, "single:b9", 350_000000, out);
 
-        out = market.buySharesRange(0, 5, 280_000000, 0); // len 5
+        out = market.buySharesRange(0, 5, 280_000000, 0, 0); // len 5
         _logScenarioState("10b", market, 7, "range:0-5(len5)", 280_000000, out);
 
         vm.stopPrank();
@@ -257,7 +257,8 @@ contract BenchmarkDiversifiedBucketsTest is Test {
             ranges,
             0,
             0,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);

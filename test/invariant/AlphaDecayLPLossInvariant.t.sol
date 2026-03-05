@@ -59,7 +59,7 @@ contract AlphaDecayLossHandler is Test {
 
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buySharesRange(rangeLower, rangeUpper, amountUSDC, 0) {} catch {}
+        try market.buySharesRange(rangeLower, rangeUpper, amountUSDC, 0, 0) {} catch {}
         vm.stopPrank();
 
         _updateLossObservations();
@@ -169,7 +169,8 @@ contract AlphaDecayLPLossInvariantTest is StdInvariant, Test {
             bucketRanges,
             0,
             0,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);

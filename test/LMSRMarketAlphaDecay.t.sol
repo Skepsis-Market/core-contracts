@@ -54,7 +54,8 @@ contract LMSRMarketAlphaDecayTest is Test {
             bucketRanges,
             feeBps,
             protocolFeeBps,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         usdc.mint(address(market), poolBalance);

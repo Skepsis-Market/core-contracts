@@ -46,7 +46,8 @@ contract ProtocolFeeRoutingTest is Test {
             bucketRanges,
             50,
             2000,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         usdc.mint(address(market), 1000_000000);
@@ -54,7 +55,7 @@ contract ProtocolFeeRoutingTest is Test {
     }
 
     function test_protocolCollector_receivesFeeOnBuy() public {
-        address collector = market.PROTOCOL_FEE_COLLECTOR();
+        address collector = market.protocolFeeCollector();
         uint256 collectorBefore = usdc.balanceOf(collector);
 
         vm.startPrank(buyer);

@@ -58,7 +58,8 @@ contract LMSRMarketTest is Test {
             bucketRanges,
             feeBps,
             protocolFeeBps,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
         
         // Simulate initial LP deposit
@@ -92,7 +93,7 @@ contract LMSRMarketTest is Test {
         bucketRanges[2] = 100;
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, 0, poolBalance, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata());
+        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, 0, poolBalance, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata(), address(0xFEE));
     }
 
     function test_constructor_revertsIfPoolBalanceZero() public {
@@ -102,7 +103,7 @@ contract LMSRMarketTest is Test {
         bucketRanges[2] = 100;
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, 0, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata());
+        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, 0, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata(), address(0xFEE));
     }
 
     function test_constructor_revertsIfTooFewBuckets() public {
@@ -110,7 +111,7 @@ contract LMSRMarketTest is Test {
         bucketRanges[0] = 0;
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, poolBalance, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata());
+        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, poolBalance, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata(), address(0xFEE));
     }
 
     function test_constructor_revertsIfFeeExceedsMax() public {
@@ -120,7 +121,7 @@ contract LMSRMarketTest is Test {
         bucketRanges[2] = 100;
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, poolBalance, bucketRanges, 501, protocolFeeBps, _defaultMetadata());
+        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, poolBalance, bucketRanges, 501, protocolFeeBps, _defaultMetadata(), address(0xFEE));
     }
 
     function test_initialState_uniformDistribution() public view {

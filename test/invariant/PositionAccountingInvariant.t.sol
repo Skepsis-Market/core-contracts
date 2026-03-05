@@ -96,7 +96,8 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
             bucketRanges,
             50,
             2000,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         positionNFT.authorizeMarket(address(market), 1);

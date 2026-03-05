@@ -23,3 +23,5 @@ anvil-*.json
 USER_STORIES.json
 AGENT_INSTRUCTIONS.json
 .gas-snapshot
+
+*/node_modules/

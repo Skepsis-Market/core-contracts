@@ -38,6 +38,7 @@ contract MarketFactory is Ownable {
         uint256 biddingDeadline;   // Betting close time (0 = no deadline)
         uint256 scheduledResolutionTime; // When resolution is expected (0 = unspecified)
         uint256 minBetSize;        // Minimum trade size in USDC (0 = no minimum)
+        uint256 maxBucketsPerRange; // Max buckets in a range trade (0 = factory default)
     }
 
     // ─────────────────── State ───────────────────────────────────────────────
@@ -79,6 +80,12 @@ contract MarketFactory is Ownable {
     /// @notice Default protocol fee share in basis points (e.g. 2000 = 20%)
     uint256 public defaultProtocolFeeBps;
 
+    /// @notice Address that receives protocol fees from all markets
+    address public protocolFeeCollector;
+
+    /// @notice Default max buckets allowed per range trade (0 = no limit)
+    uint256 public defaultMaxBucketsPerRange;
+
     // ─────────────────── Events ──────────────────────────────────────────────
 
     event MarketCreated(
@@ -94,7 +101,10 @@ contract MarketFactory is Ownable {
     event MaxBucketsUpdated(uint256 oldValue, uint256 newValue);
     event DefaultFeeBpsUpdated(uint256 oldValue, uint256 newValue);
     event DefaultProtocolFeeBpsUpdated(uint256 oldValue, uint256 newValue);
+    event ProtocolFeeCollectorUpdated(address indexed oldCollector, address indexed newCollector);
+    event DefaultMaxBucketsPerRangeUpdated(uint256 oldValue, uint256 newValue);
     event MarketPaused(uint256 indexed marketId, address indexed marketAddress);
+    event MarketUnpaused(uint256 indexed marketId, address indexed marketAddress);
 
     // ─────────────────── Errors ──────────────────────────────────────────────
 
@@ -114,7 +124,8 @@ contract MarketFactory is Ownable {
         uint256 _minPoolBalance,
         uint256 _maxBuckets,
         uint256 _defaultFeeBps,
-        uint256 _defaultProtocolFeeBps
+        uint256 _defaultProtocolFeeBps,
+        address _protocolFeeCollector
     ) Ownable(msg.sender) {
         if (_implementation == address(0)) revert InvalidParameters();
         if (_usdcToken == address(0)) revert InvalidParameters();
@@ -123,6 +134,7 @@ contract MarketFactory is Ownable {
         if (_maxBuckets < 2) revert InvalidParameters();
         if (_defaultFeeBps > 500) revert InvalidParameters();
         if (_defaultProtocolFeeBps > 10000) revert InvalidParameters();
+        if (_protocolFeeCollector == address(0)) revert InvalidParameters();
 
         implementation = _implementation;
         usdcToken = IUSDC(_usdcToken);
@@ -131,6 +143,7 @@ contract MarketFactory is Ownable {
         maxBuckets = _maxBuckets;
         defaultFeeBps = _defaultFeeBps;
         defaultProtocolFeeBps = _defaultProtocolFeeBps;
+        protocolFeeCollector = _protocolFeeCollector;
     }
 
     // ─────────────────── Creator Whitelist ───────────────────────────────────
@@ -228,7 +241,8 @@ contract MarketFactory is Ownable {
             bucketRanges,      // computed from minValue, maxValue, bucketCount
             actualFeeBps,
             actualProtocolFeeBps,
-            metadata
+            metadata,
+            protocolFeeCollector
         );
 
         // ── 2. Register + authorize ───────────────────────────────────────────
@@ -244,6 +258,12 @@ contract MarketFactory is Ownable {
         if (p.decayDuration > 0 && p.alphaFinal > 0) {
             uint256 startTime = p.decayStart == 0 ? block.timestamp : p.decayStart;
             market.configureAlphaDecay(p.alphaFinal, startTime, p.decayDuration);
+        }
+
+        // ── 5. Configure max range width ────────────────────────────────────
+        uint256 rangeWidth = p.maxBucketsPerRange == 0 ? defaultMaxBucketsPerRange : p.maxBucketsPerRange;
+        if (rangeWidth > 0) {
+            market.setMaxRangeWidth(rangeWidth);
         }
 
         emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, p.bucketCount);
@@ -275,6 +295,14 @@ contract MarketFactory is Ownable {
         emit DefaultFeeBpsUpdated(oldValue, newDefaultFeeBps);
     }
 
+    /// @notice Update protocol fee collector address
+    function setProtocolFeeCollector(address _collector) external onlyOwner {
+        if (_collector == address(0)) revert InvalidParameters();
+        address old = protocolFeeCollector;
+        protocolFeeCollector = _collector;
+        emit ProtocolFeeCollectorUpdated(old, _collector);
+    }
+
     /// @notice Update default protocol fee share
     function setDefaultProtocolFeeBps(uint256 newDefaultProtocolFeeBps) external onlyOwner {
         if (newDefaultProtocolFeeBps > 10000) revert InvalidParameters();
@@ -283,11 +311,28 @@ contract MarketFactory is Ownable {
         emit DefaultProtocolFeeBpsUpdated(oldValue, newDefaultProtocolFeeBps);
     }
 
-    /// @notice Emergency pause a market
-    function pauseMarket(uint256 marketId) external onlyOwner {
-        address marketAddress = marketById[marketId];
+    /// @notice Update default max buckets per range trade
+    function setDefaultMaxBucketsPerRange(uint256 newMaxBucketsPerRange) external onlyOwner {
+        uint256 oldValue = defaultMaxBucketsPerRange;
+        defaultMaxBucketsPerRange = newMaxBucketsPerRange;
+        emit DefaultMaxBucketsPerRangeUpdated(oldValue, newMaxBucketsPerRange);
+    }
+
+    /// @notice Emergency pause a market — blocks all trading and claims
+    function pauseMarket(uint256 _marketId) external onlyOwner {
+        address marketAddress = marketById[_marketId];
         if (marketAddress == address(0)) revert InvalidParameters();
         if (!isValidMarket[marketAddress]) revert InvalidParameters();
-        emit MarketPaused(marketId, marketAddress);
+        LMSRMarket(marketAddress).emergencyPause();
+        emit MarketPaused(_marketId, marketAddress);
+    }
+
+    /// @notice Unpause an emergency-paused market
+    function unpauseMarket(uint256 _marketId) external onlyOwner {
+        address marketAddress = marketById[_marketId];
+        if (marketAddress == address(0)) revert InvalidParameters();
+        if (!isValidMarket[marketAddress]) revert InvalidParameters();
+        LMSRMarket(marketAddress).emergencyUnpause();
+        emit MarketUnpaused(_marketId, marketAddress);
     }
 }

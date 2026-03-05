@@ -59,7 +59,8 @@ contract BenchmarkTwoBucketDecayTest is Test {
             ranges,
             0, // feeBps = 0 for pure math benchmark
             0,  // protocolFeeBps = 0
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         // Seed initial liquidity

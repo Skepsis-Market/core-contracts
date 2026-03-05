@@ -171,7 +171,8 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             bucketRanges,
             50, // 0.5% fee
             2000, // 20% protocol fee
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
         
         // Mint initial pool balance to market

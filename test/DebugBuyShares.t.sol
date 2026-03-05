@@ -52,7 +52,8 @@ contract DebugBuySharesTest is Test {
             bucketRanges,
             50,
             2000,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
         
         usdc.mint(address(market), POOL_BALANCE);

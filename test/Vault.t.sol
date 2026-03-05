@@ -80,7 +80,7 @@ contract VaultTest is Test {
         uint256 _alpha = seed / _isqrt(numBuckets);
         m = new LMSRMarket(
             id, creator, address(0xFACE), address(usdc), address(0),
-            _alpha, seed, ranges, 100, 2000, _defaultMetadata()
+            _alpha, seed, ranges, 100, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.mint(address(m), seed);
     }
@@ -423,10 +423,11 @@ contract VaultTest is Test {
         vault.deployTo(address(market2), 2_000_000000);
         vm.stopPrank();
 
-        // totalAssets = vault liquid + market1 pool (seed+deploy) + market2 pool (seed+deploy)
+        // Conservative NAV: totalAssets = vault liquid + min(pool, deployed) per market
+        // deployed = 2K each (seed was from creator, not vault). Cache = deployed amount.
         uint256 expected = (deposit - 4_000_000000)
-                         + (SEED + 2_000_000000)
-                         + (SEED + 2_000_000000);
+                         + 2_000_000000   // min(pool=3K, deployed=2K) for market1
+                         + 2_000_000000;  // min(pool=3K, deployed=2K) for market2
         assertEq(vault.totalAssets(), expected);
     }
 
@@ -440,10 +441,16 @@ contract VaultTest is Test {
         // Trade into market1 → poolBalance grows (net of protocol fee)
         _buy(market1, 0, 1_000_000000);
 
+        // Conservative NAV: cached value = deployed amount (5K). Pool grew but
+        // totalAssets uses cache — stays same until syncMarketValue() is called.
         uint256 taAfter = vault.totalAssets();
-        // poolBalance grew by ~98% of trade amount (1% fee, 20% of that = protocol)
-        // Net ~$980 stays in pool; totalAssets should grow
-        assertGt(taAfter, taBefore, "totalAssets should grow after trade fees");
+        assertEq(taAfter, taBefore, "totalAssets unchanged (cached) before sync");
+
+        // After sync: conservative NAV caps at deployed, so value stays at deployed=5K
+        // (poolBalance > deployed, so min(pool, deployed) = deployed = 5K = unchanged)
+        vault.syncMarketValue(address(market1));
+        uint256 taSynced = vault.totalAssets();
+        assertEq(taSynced, taBefore, "conservative NAV: capped at deployed even after trade");
     }
 
     function test_totalAssets_shrinks_afterResolvedMarketHarvested() public {
@@ -451,16 +458,17 @@ contract VaultTest is Test {
         vm.prank(admin);
         vault.deployTo(address(market1), 5_000_000000);
 
-        // Resolve market1 (winning bucket 2, no traders on bucket 2 so winShares ≈ initialShares)
+        // Sync cache to resolved state before harvest
         vm.prank(creator);
         market1.resolveMarket(50); // value 50 = bucket 2
 
-        // Before harvest: totalAssets includes resolved market's LP residual
+        // Sync to pick up resolved status → cache = pool - winShares (LP residual)
+        vault.syncMarketValue(address(market1));
         uint256 taBeforeHarvest = vault.totalAssets();
 
         vault.harvestResolved(address(market1));
 
-        // After harvest: market1 claims are 0, but vault liquid increased
+        // After harvest: market cache zeroed, vault liquid increased by LP residual
         // totalAssets should be roughly the same (capital moved back to vault)
         assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest, 2, "totalAssets approx unchanged after harvest");
     }

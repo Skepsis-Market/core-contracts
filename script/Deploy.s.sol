@@ -102,7 +102,7 @@ contract DeployScript is Script {
             LMSRMarket.MarketMetadata memory implMeta;
             lmsrImpl = address(new LMSRMarket(
                 0, address(0), address(0), address(usdc), address(0),
-                1, 1, implRanges, 0, 0, implMeta
+                1, 1, implRanges, 0, 0, implMeta, address(0xFEE)
             ));
         }
         console.log("  LMSRMarket impl:", lmsrImpl);
@@ -124,7 +124,8 @@ contract DeployScript is Script {
             MIN_POOL_BALANCE,
             MAX_BUCKETS,
             DEFAULT_FEE_BPS,
-            PROTOCOL_FEE_BPS
+            PROTOCOL_FEE_BPS,
+            address(0xFEE)
         );
         require(address(factory) == predictedFactory, "Factory address prediction mismatch");
         factory.setCreatorAllowance(deployer, 10);

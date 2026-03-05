@@ -71,11 +71,19 @@ contract Vault is ERC4626, Ownable {
     mapping(address => uint256) public deployedTo;  // cumulative principal sent to each market
     uint256 public totalDeployed;
 
+    // ─── Cached Market Value (O(1) totalAssets) ────────────────────────────
+    uint256 public cachedTotalMarketValue;              // Σ cached per-market values
+    mapping(address => uint256) public cachedMarketValue; // per-market cached value
+
+    // ─── Withdrawal Queue Counter (O(1) pendingWithdrawalsCount) ───────────
+    uint256 public pendingCount;                        // unfulfilled queue entries
+
     // ─── Events ───────────────────────────────────────────────────────────────
     event MarketRegistered(address indexed market);
     event CapitalDeployed(address indexed market, uint256 amount);
     event SurplusHarvested(address indexed market, uint256 amount);
     event ResolvedHarvested(address indexed market, uint256 amount);
+    event MarketValueSynced(address indexed market, uint256 oldValue, uint256 newValue);
     event WithdrawalRequested(address indexed owner, uint256 indexed queueIndex, uint256 sharesBurned, uint256 assetsOwed);
     event WithdrawalFulfilled(uint256 indexed queueIndex, uint256 assetsOwed);
     event WithdrawalClaimed(address indexed owner, uint256 indexed queueIndex, uint256 assets);
@@ -106,21 +114,16 @@ contract Vault is ERC4626, Ownable {
     // ERC-4626 OVERRIDES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice NAV = vault liquid + Σ market.poolBalance() (active) + Σ LP-residual (resolved).
-    ///         Full poolBalance is counted for active markets: LPs accept market risk.
-    ///         Reserved-for-withdrawals is NOT subtracted from NAV (shares are still outstanding).
-    function totalAssets() public view override returns (uint256 total) {
-        total = IERC20(asset()).balanceOf(address(this));
-        for (uint256 i = 0; i < markets.length; i++) {
-            total += _claimableFromMarket(markets[i]);
-        }
+    /// @notice NAV = vault liquid USDC + cached Σ market values.
+    ///         O(1) — uses incrementally-updated cache instead of looping all markets.
+    ///         Call syncMarketValue() to refresh individual market values if needed.
+    function totalAssets() public view override returns (uint256) {
+        return IERC20(asset()).balanceOf(address(this)) + cachedTotalMarketValue;
     }
 
-    /// @notice Total value currently deployed in active/resolved markets.
-    function _totalMarketValue() internal view returns (uint256 total) {
-        for (uint256 i = 0; i < markets.length; i++) {
-            total += _claimableFromMarket(markets[i]);
-        }
+    /// @notice Total value currently deployed in active/resolved markets (cached).
+    function _totalMarketValue() internal view returns (uint256) {
+        return cachedTotalMarketValue;
     }
 
     /// @notice Liquid USDC available for INSTANT withdrawal (excludes reserved for queue).
@@ -217,7 +220,8 @@ contract Vault is ERC4626, Ownable {
             requestTime: block.timestamp
         }));
         totalAssetsOwed += assetsOwed;
-        
+        pendingCount++;
+
         emit WithdrawalRequested(msg.sender, queueIndex, shares, assetsOwed);
     }
 
@@ -250,14 +254,9 @@ contract Vault is ERC4626, Ownable {
         return withdrawalQueue[queueIndex];
     }
 
-    /// @notice Get total pending (unfulfilled) withdrawal requests count
-    function pendingWithdrawalsCount() external view returns (uint256 count) {
-        for (uint256 i = queueHead; i < withdrawalQueue.length; i++) {
-            WithdrawalRequest storage req = withdrawalQueue[i];
-            if (!req.fulfilled && !req.claimed && req.assetsOwed > 0) {
-                count++;
-            }
-        }
+    /// @notice Get total pending (unfulfilled) withdrawal requests count — O(1)
+    function pendingWithdrawalsCount() external view returns (uint256) {
+        return pendingCount;
     }
 
     /// @notice USDC available for new market deployments (excludes reserved + buffer)
@@ -307,6 +306,10 @@ contract Vault is ERC4626, Ownable {
         deployedTo[market] = amount;
         totalDeployed      += amount;
 
+        // Update cached market value (conservative: deployed amount)
+        cachedMarketValue[market] = amount;
+        cachedTotalMarketValue += amount;
+
         // Raw USDC transfer (market constructor already set poolBalance accounting)
         IERC20(asset()).safeTransfer(market, amount);
 
@@ -342,6 +345,12 @@ contract Vault is ERC4626, Ownable {
         deployedTo[market] += amount;
         totalDeployed      += amount;
 
+        // Update cached value: deployed increased, so cached value increases by amount
+        // (conservative NAV caps at deployed, so new cache = deployedTo[market])
+        uint256 oldCached = cachedMarketValue[market];
+        cachedMarketValue[market] = deployedTo[market];
+        cachedTotalMarketValue = cachedTotalMarketValue - oldCached + deployedTo[market];
+
         IERC20(asset()).forceApprove(market, amount);
         LMSRMarket(market).addLiquidity(amount);
 
@@ -368,6 +377,9 @@ contract Vault is ERC4626, Ownable {
         m.withdrawSurplus(address(this), surplus);
         uint256 harvested = IERC20(asset()).balanceOf(address(this)) - before;
 
+        // Refresh cached market value after surplus extraction
+        _syncCachedMarketValue(market);
+
         // Process withdrawal queue with returned capital
         _processWithdrawalQueue(harvested);
 
@@ -387,6 +399,12 @@ contract Vault is ERC4626, Ownable {
         uint256 before = IERC20(asset()).balanceOf(address(this));
         m.withdrawLP();
         uint256 harvested = IERC20(asset()).balanceOf(address(this)) - before;
+
+        // Zero out cached market value — LP has been fully withdrawn
+        uint256 oldCached = cachedMarketValue[market];
+        cachedMarketValue[market] = 0;
+        cachedTotalMarketValue = cachedTotalMarketValue > oldCached
+            ? cachedTotalMarketValue - oldCached : 0;
 
         // Process withdrawal queue with returned capital
         _processWithdrawalQueue(harvested);
@@ -437,6 +455,13 @@ contract Vault is ERC4626, Ownable {
         return markets.length;
     }
 
+    /// @notice Permissionless refresh of a single market's cached value.
+    ///         Useful for keepers or FE to keep totalAssets() accurate between harvests.
+    function syncMarketValue(address market) external {
+        if (!isRegistered[market]) revert MarketNotRegistered();
+        _syncCachedMarketValue(market);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // INTERNAL
     // ═══════════════════════════════════════════════════════════════════════════
@@ -468,7 +493,8 @@ contract Vault is ERC4626, Ownable {
                 reservedForWithdrawals += req.assetsOwed;
                 totalAssetsOwed -= req.assetsOwed;
                 remaining -= req.assetsOwed;
-                
+                if (pendingCount > 0) pendingCount--;
+
                 emit WithdrawalFulfilled(i, req.assetsOwed);
             } else {
                 // Not enough capital for this request - stop here
@@ -479,7 +505,8 @@ contract Vault is ERC4626, Ownable {
     }
 
     /// @notice Value the vault attributes to each market in totalAssets().
-    ///         Active:   full poolBalance (LPs bear risk; capital returns at resolution)
+    ///         Active:   min(poolBalance, deployed) — conservative: caps upside at principal,
+    ///                   marks-to-market on downside. Prevents phantom NAV inflation.
     ///         Resolved: pool minus unclaimed winning shares (net LP residual)
     ///         Other:    0
     function _claimableFromMarket(address market) internal view returns (uint256) {
@@ -488,7 +515,9 @@ contract Vault is ERC4626, Ownable {
         LMSRMarket.MarketStatus s = m.status();
 
         if (s == LMSRMarket.MarketStatus.ACTIVE) {
-            return m.poolBalance();
+            uint256 pool = m.poolBalance();
+            uint256 deployed = deployedTo[market];
+            return pool < deployed ? pool : deployed; // min(pool, deployed)
         }
 
         if (s == LMSRMarket.MarketStatus.RESOLVED && !m.lpWithdrawn()) {
@@ -498,5 +527,14 @@ contract Vault is ERC4626, Ownable {
         }
 
         return 0;
+    }
+
+    /// @dev Refresh cached value for a single market from on-chain state.
+    function _syncCachedMarketValue(address market) internal {
+        uint256 oldCached = cachedMarketValue[market];
+        uint256 newValue = _claimableFromMarket(market);
+        cachedMarketValue[market] = newValue;
+        cachedTotalMarketValue = cachedTotalMarketValue - oldCached + newValue;
+        emit MarketValueSynced(market, oldCached, newValue);
     }
 }

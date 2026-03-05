@@ -55,7 +55,8 @@ contract RangeLMSRTest is Test {
             ranges,         // bucket ranges
             50,             // feeBps (0.5%)
             2000,           // protocolFeeBps (20% of fees)
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
         
         usdc.transfer(address(market), POOL);
@@ -98,9 +99,10 @@ contract RangeLMSRTest is Test {
         // Buy $10 across 3 buckets
         uint256 shares = market.buySharesRange(
             114500,    // rangeLower
-            114800,    // rangeUpper  
+            114800,    // rangeUpper
             10_000000, // $10
-            0          // minSharesOut (no slippage protection for test)
+            0,         // minSharesOut (no slippage protection for test)
+            0          // targetShares (0 = binary search)
         );
         vm.stopPrank();
         
@@ -125,7 +127,7 @@ contract RangeLMSRTest is Test {
         
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
         vm.stopPrank();
         
         // Get bucket shares after
@@ -167,13 +169,13 @@ contract RangeLMSRTest is Test {
         
         LMSRMarket marketRange = new LMSRMarket(
             2, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata()
+            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.transfer(address(marketRange), POOL);
         
         LMSRMarket marketSingle = new LMSRMarket(
             3, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata()
+            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.transfer(address(marketSingle), POOL);
         vm.stopPrank();
@@ -184,7 +186,7 @@ contract RangeLMSRTest is Test {
         // RANGE BUY: $10 across 3 buckets atomically
         vm.startPrank(trader);
         usdc.approve(address(marketRange), 10_000000);
-        uint256 sharesRange = marketRange.buySharesRange(114500, 114800, 10_000000, 0);
+        uint256 sharesRange = marketRange.buySharesRange(114500, 114800, 10_000000, 0, 0);
         
         // SINGLE BUYS: $3.33 per bucket (same total $10)
         usdc.approve(address(marketSingle), 10_000000);
@@ -220,7 +222,7 @@ contract RangeLMSRTest is Test {
         // Buy range
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
         vm.stopPrank();
         
         // Resolve with value 114600 (bucket 46, within range 45-47)
@@ -246,7 +248,7 @@ contract RangeLMSRTest is Test {
         // Buy range
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
         vm.stopPrank();
         
         // Resolve with value 115000 (bucket 50, OUTSIDE range 45-47)
@@ -263,7 +265,7 @@ contract RangeLMSRTest is Test {
         // Buy range first
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
         
         // Get balance before sell
         uint256 balBefore = usdc.balanceOf(trader);
@@ -289,7 +291,7 @@ contract RangeLMSRTest is Test {
         // Buy range first
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
         
         // Get bucket shares before sell
         (uint256 sharesBucket45Before,,) = market.buckets(45);

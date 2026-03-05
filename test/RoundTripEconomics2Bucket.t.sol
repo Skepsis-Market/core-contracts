@@ -62,7 +62,8 @@ contract RoundTripEconomics2BucketTest is Test {
             ranges,
             FEE_BPS,
             PROTOCOL_FEE_BPS,
-            _defaultMetadata()
+            _defaultMetadata(),
+            address(0xFEE)
         );
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);
