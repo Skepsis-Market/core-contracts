@@ -39,6 +39,9 @@ contract MarketFactory is Ownable {
         uint256 scheduledResolutionTime; // When resolution is expected (0 = unspecified)
         uint256 minBetSize;        // Minimum trade size in USDC (0 = no minimum)
         uint256 maxBucketsPerRange; // Max buckets in a range trade (0 = factory default)
+        // Dynamic range expansion — both zero means no expansion
+        uint256 expandedMinValue;  // Expanded range lower bound (0 = no expansion below)
+        uint256 expandedMaxValue;  // Expanded range upper bound (0 = no expansion above)
     }
 
     // ─────────────────── State ───────────────────────────────────────────────
@@ -264,6 +267,22 @@ contract MarketFactory is Ownable {
         uint256 rangeWidth = p.maxBucketsPerRange == 0 ? defaultMaxBucketsPerRange : p.maxBucketsPerRange;
         if (rangeWidth > 0) {
             market.setMaxRangeWidth(rangeWidth);
+        }
+
+        // ── 6. Configure dynamic range expansion if requested ────────────────
+        if (p.expandedMinValue != 0 || p.expandedMaxValue != 0) {
+            uint256 expMin = p.expandedMinValue == 0 ? p.minValue : p.expandedMinValue;
+            uint256 expMax = p.expandedMaxValue == 0 ? p.maxValue : p.expandedMaxValue;
+
+            if (expMin > p.minValue) revert InvalidParameters();
+            if (expMax < p.maxValue) revert InvalidParameters();
+            if ((p.minValue - expMin) % bucketWidth != 0) revert InvalidBucketRanges();
+            if ((expMax - p.maxValue) % bucketWidth != 0) revert InvalidBucketRanges();
+
+            uint256 totalExpanded = (expMax - expMin) / bucketWidth;
+            if (totalExpanded > maxBuckets) revert TooManyBuckets();
+
+            market.configureExpansion(expMin, expMax);
         }
 
         emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, p.bucketCount);

@@ -287,39 +287,6 @@ contract GasBenchmarkTest is Test {
         vm.stopPrank();
     }
     
-    /// @notice Benchmark: Buy with permit (gasless approval)
-    function testGas_buySharesWithPermit_10buckets() public {
-        LMSRMarket market = _createMarket(10);
-        
-        // Generate permit signature
-        uint256 traderKey = 0x1234;
-        address traderWithKey = vm.addr(traderKey);
-        usdc.mint(traderWithKey, 100_000000);
-        
-        uint256 amount = 100_000000;
-        uint256 deadline = block.timestamp + 1 hours;
-        
-        bytes32 permitHash = keccak256(
-            abi.encodePacked(
-                "\x19\x01",
-                usdc.DOMAIN_SEPARATOR(),
-                keccak256(abi.encode(
-                    usdc.PERMIT_TYPEHASH(),
-                    traderWithKey,
-                    address(market),
-                    amount,
-                    usdc.nonces(traderWithKey),
-                    deadline
-                ))
-            )
-        );
-        
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(traderKey, permitHash);
-        
-        vm.prank(traderWithKey);
-        market.buySharesWithPermit(5, amount, 0, deadline, v, r, s);
-    }
-    
     /// @notice Benchmark: Calculate shares for cost (view function)
     function testGas_calculateSharesForCost() public {
         LMSRMarket market = _createMarket(10);

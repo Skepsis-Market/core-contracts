@@ -51,6 +51,9 @@ contract DeployScript is Script {
     // Protects against late snipers as resolution approaches
     uint256 constant DECAY_FINAL_BPS  = 3000;           // 30% of alphaInitial
     uint256 constant DECAY_DURATION   = 30 days;
+    // Dynamic range expansion: 0 = disabled
+    uint256 constant EXPANDED_MIN     = 0;              // 0 = no expansion below
+    uint256 constant EXPANDED_MAX     = 0;              // 0 = no expansion above
 
     // ─── Runtime ─────────────────────────────────────────────────────────────
     address public deployer;
@@ -174,6 +177,8 @@ contract DeployScript is Script {
         p.protocolFeeBps = PROTOCOL_FEE_BPS;
         p.alphaFinal     = (alphaInitial * DECAY_FINAL_BPS) / 10000;
         p.decayDuration  = DECAY_DURATION;
+        p.expandedMinValue = EXPANDED_MIN;
+        p.expandedMaxValue = EXPANDED_MAX;
 
         address marketAddr = factory.createMarket(p);
         LMSRMarket market  = LMSRMarket(marketAddr);
