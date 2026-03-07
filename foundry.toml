@@ -8,6 +8,7 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 1      # minimizes deployment bytecode size (trades runtime gas for size)
 via_ir = true
+bytecode_hash = "none"  # strip CBOR metadata to save ~53 bytes of deployed bytecode
 remappings = [
     "@prb/math/=lib/prb-math/src/",
     "@openzeppelin/=lib/openzeppelin-contracts/contracts/"
