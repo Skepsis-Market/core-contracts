@@ -521,9 +521,9 @@ contract Vault is ERC4626, Ownable {
         }
 
         if (s == LMSRMarket.MarketStatus.RESOLVED && !m.lpWithdrawn()) {
-            LMSRMarket.Bucket memory winBucket = m.getBucket(m.winningBucket());
+            (uint256 winShares, , ) = m.buckets(m.winningBucket());
             uint256 pool = m.poolBalance();
-            return pool > winBucket.shares ? pool - winBucket.shares : 0;
+            return pool > winShares ? pool - winShares : 0;
         }
 
         return 0;

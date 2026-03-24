@@ -5,4 +5,5 @@ interface IPositionNFT {
     function mint(address to, uint256 tokenId, uint256 amount) external;
     function burn(address from, uint256 tokenId, uint256 amount) external;
     function balanceOf(address account, uint256 id) external view returns (uint256);
+    function decodeTokenId(uint256 tokenId) external pure returns (uint256 marketId, uint256 rangeLower, uint256 rangeUpper);
 }

@@ -140,24 +140,6 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 bucketCount
     );
 
-    event SharesPurchased(
-        uint256 indexed marketId,
-        address indexed buyer,
-        uint256 indexed bucketId,
-        uint256 amountUSDC,
-        uint256 sharesMinted,
-        uint256 newPrice
-    );
-
-    event SharesSold(
-        uint256 indexed marketId,
-        address indexed seller,
-        uint256 indexed bucketId,
-        uint256 sharesBurned,
-        uint256 amountUSDC,
-        uint256 newPrice
-    );
-
     event MarketResolved(
         uint256 indexed marketId,
         uint256 resolutionValue,
@@ -192,16 +174,6 @@ contract LMSRMarket is ReentrancyGuard {
     event RangeSharesSold(
         uint256 indexed marketId,
         address indexed seller,
-        uint256 startBucket,
-        uint256 endBucket,
-        uint256 shares,
-        uint256 payoutUSDC
-    );
-
-    /// @notice Emitted when range winnings are claimed
-    event RangeWinningsClaimed(
-        uint256 indexed marketId,
-        address indexed claimer,
         uint256 startBucket,
         uint256 endBucket,
         uint256 shares,
@@ -374,18 +346,6 @@ contract LMSRMarket is ReentrancyGuard {
         emit MarketCreated(_marketId, _creator, _poolBalance, alpha, bucketCount);
     }
 
-    function getBucket(uint256 bucketId) external view returns (Bucket memory) {
-        if (bucketId >= bucketCount) revert InvalidBucket();
-        return buckets[bucketId];
-    }
-
-    function getCachedSumExp() external view returns (uint256) {
-        return _tree.totalSum();
-    }
-
-    function isSumExpDirty() external view returns (bool) {
-        return false; // Tree is always consistent — no dirty flag needed
-    }
 
     /// @notice Safety buffer based on CURRENT alpha (not initial).
     /// @dev As alpha decays, the worst-case future loss shrinks proportionally.
@@ -409,11 +369,11 @@ contract LMSRMarket is ReentrancyGuard {
         return currentBalance - requiredReserves;
     }
 
-    function isAlphaDecayConfigured() public view returns (bool) {
+    function isAlphaDecayConfigured() internal view returns (bool) {
         return decayDuration > 0 && alphaFinal < alphaInitial;
     }
 
-    function needsAlphaSync() public view returns (bool) {
+    function needsAlphaSync() internal view returns (bool) {
         if (!isAlphaDecayConfigured()) return false;
         if (block.timestamp < decayStartTime) return false;
         return block.timestamp >= lastAlphaSyncTime + ALPHA_EPOCH_LENGTH;
@@ -604,13 +564,7 @@ contract LMSRMarket is ReentrancyGuard {
         }
     }
 
-    /// @notice Encode token ID for a single bucket (rangeLower = rangeUpper = bucketId)
-    /// @dev Matches PositionNFT.encodeTokenIdSingle format: (marketId << 128) | (bucketId << 64) | bucketId
-    function _tokenIdForBucket(uint256 bucketId) internal view returns (uint256) {
-        return (uint256(uint128(marketId)) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
-    }
-
-    /// @notice Encode token ID for a range of buckets
+    /// @notice Encode token ID for a range of buckets (single bucket: rangeLower == rangeUpper)
     /// @dev Matches PositionNFT.encodeTokenId format: (marketId << 128) | (rangeLower << 64) | rangeUpper
     function _tokenIdForRange(uint256 rangeLower, uint256 rangeUpper) internal view returns (uint256) {
         return (uint256(uint128(marketId)) << 128) | (uint256(uint64(rangeLower)) << 64) | uint256(uint64(rangeUpper));
@@ -700,32 +654,104 @@ contract LMSRMarket is ReentrancyGuard {
         emit AlphaSynced(marketId, oldAlpha, newAlpha, block.timestamp);
     }
 
-    function buyShares(uint256 bucketId, uint256 amountUSDC, uint256 minSharesOut)
-        external
-        nonReentrant
-        onlyActive
-        returns (uint256 sharesMinted)
-    {
-        return _executeBuy(bucketId, amountUSDC, minSharesOut);
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNIFIED BUY — single bucket + correlated range in one entry point
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev Core buy logic
-    function _executeBuy(uint256 bucketId, uint256 amountUSDC, uint256 minSharesOut)
-        internal
-        returns (uint256 sharesMinted)
-    {
+    /// @notice Buy shares across a contiguous range of outcomes (Correlated LMSR)
+    /// @dev For single-bucket buys, pass rangeLower/rangeUpper that map to one bucket.
+    ///      User pays once, receives shares that cover ALL buckets in range.
+    /// @param rangeLower Lower bound in value space (inclusive)
+    /// @param rangeUpper Upper bound in value space (exclusive)
+    /// @param amountUSDC Maximum USDC to spend (6 decimals)
+    /// @param minSharesOut Minimum shares to receive (slippage protection)
+    /// @param targetShares FE-provided quote hint (0 = binary search, >0 = try fast path first)
+    function buySharesRange(
+        uint256 rangeLower,
+        uint256 rangeUpper,
+        uint256 amountUSDC,
+        uint256 minSharesOut,
+        uint256 targetShares,
+        address recipient
+    ) external nonReentrant onlyActive returns (uint256 shares) {
+        if (recipient == address(0)) recipient = msg.sender;
         _syncAlpha();
-
-        if (bucketId >= bucketCount) revert InvalidBucket();
         if (amountUSDC == 0) revert InvalidParameters();
         if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
         if (minBetSize != 0 && amountUSDC < minBetSize) revert BetTooSmall();
 
-        // Activate bucket on first trade if expansion is configured
-        if (maxBucketCount > 0 && !_isBucketActive(bucketId)) {
-            _activateBucket(bucketId);
+        (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
+
+        // Activate any inactive buckets in range (expansion markets only)
+        if (maxBucketCount > 0) {
+            for (uint256 b = startBucket; b <= endBucket; b++) {
+                if (!_isBucketActive(b)) {
+                    _activateBucket(b);
+                }
+            }
         }
 
+        // ── Single-bucket fast path: direct LMSR math (no binary search) ──
+        if (startBucket == endBucket) {
+            return _executeBuySingle(startBucket, amountUSDC, minSharesOut, recipient);
+        }
+
+        // ── Multi-bucket range path ──
+        uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
+        uint256 netAmount = amountUSDC - feesUSDC;
+
+        uint256 actualCost;
+        {
+            uint256 sumBefore = _tree.totalSum();
+            uint256 rSum = _tree.rangeSum(uint32(startBucket), uint32(endBucket));
+
+            if (targetShares > 0) {
+                uint256 factor = LMSRCost.sharesToFactor(targetShares, alpha);
+                uint256 sumAfter = sumBefore - rSum + Math.mulDiv(rSum, factor, WAD);
+                uint256 cost = LMSRCost.costFromDelta(alpha, sumBefore, sumAfter);
+                if (cost <= netAmount) {
+                    shares = targetShares;
+                    actualCost = cost;
+                }
+            }
+
+            if (shares == 0) {
+                shares = LMSRCost.sharesFromCost(alpha, sumBefore, rSum, netAmount);
+                if (shares > 0) {
+                    uint256 factor = LMSRCost.sharesToFactor(shares, alpha);
+                    uint256 sumAfter = sumBefore - rSum + Math.mulDiv(rSum, factor, WAD);
+                    actualCost = LMSRCost.costFromDelta(alpha, sumBefore, sumAfter);
+                }
+            }
+        }
+
+        if (shares < minSharesOut) revert InvalidParameters();
+
+        _validateRangeSolvency(startBucket, endBucket, shares, actualCost);
+        _applyRangeBuy(startBucket, endBucket, shares, actualCost);
+
+        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
+        uint256 lpFee = feesUSDC - protocolFee;
+        feesCollectedLP += lpFee;
+        lpFeesAccrued += lpFee;
+        feesCollectedProtocol += protocolFee;
+        totalVolume += amountUSDC;
+
+        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
+        _routeProtocolFee(protocolFee);
+
+        if (_positionTokenEnabled()) {
+            IPositionNFT(positionNFT).mint(recipient, _tokenIdForRange(startBucket, endBucket), shares);
+        }
+
+        emit RangeSharesPurchased(marketId, recipient, startBucket, endBucket, shares, actualCost);
+    }
+
+    /// @dev Single-bucket buy: direct LMSR cost function (no binary search needed)
+    function _executeBuySingle(uint256 bucketId, uint256 amountUSDC, uint256 minSharesOut, address recipient)
+        internal
+        returns (uint256 sharesMinted)
+    {
         uint256 C_before = _calculateCostFunction();
         uint256 sumOther = _getSumOther(bucketId);
 
@@ -744,7 +770,6 @@ contract LMSRMarket is ReentrancyGuard {
         sharesMinted = newShares - buckets[bucketId].shares;
         if (sharesMinted < minSharesOut) revert InvalidParameters();
 
-        // Solvency check: newShares cannot exceed poolBalance AFTER adding net cost
         uint256 newPoolBalance = poolBalance + netCostUSDC;
         if (newShares > newPoolBalance + SOLVENCY_DUST) {
             revert SolvencyViolation();
@@ -756,7 +781,6 @@ contract LMSRMarket is ReentrancyGuard {
             currentMaxBucketId = bucketId;
         }
 
-        // Update tree — O(log n) with chunked factor application
         _applyTreeBuyFactor(uint32(bucketId), uint32(bucketId), sharesMinted);
 
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
@@ -771,148 +795,37 @@ contract LMSRMarket is ReentrancyGuard {
         usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
         _routeProtocolFee(protocolFee);
 
-        uint256 newPrice = _calculatePrice(bucketId);
-
         if (_positionTokenEnabled()) {
-            IPositionNFT(positionNFT).mint(msg.sender, _tokenIdForBucket(bucketId), sharesMinted);
+            IPositionNFT(positionNFT).mint(recipient, _tokenIdForRange(bucketId, bucketId), sharesMinted);
         }
 
-        emit SharesPurchased(marketId, msg.sender, bucketId, amountUSDC, sharesMinted, newPrice);
+        emit RangeSharesPurchased(marketId, recipient, bucketId, bucketId, sharesMinted, amountUSDC);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CORRELATED RANGE LMSR - Clean design matching Sui semantics
+    // UNIFIED SELL — single bucket + correlated range in one entry point
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Buy shares across a contiguous range of outcomes (Correlated LMSR)
-    /// @dev User pays once, receives shares that cover ALL buckets in range.
-    ///      If ANY bucket in range wins, user gets full payout.
+    /// @notice Sell shares from a position (single bucket or range)
     /// @param rangeLower Lower bound in value space (inclusive)
     /// @param rangeUpper Upper bound in value space (exclusive)
-    /// @param amountUSDC Maximum USDC to spend (6 decimals)
-    /// @param minSharesOut Minimum shares to receive (slippage protection)
-    /// @return shares Number of shares received (covers ALL buckets in range)
-    /// @param targetShares FE-provided quote hint (0 = binary search, >0 = try fast path first)
-    function buySharesRange(
-        uint256 rangeLower,
-        uint256 rangeUpper,
-        uint256 amountUSDC,
-        uint256 minSharesOut,
-        uint256 targetShares
-    ) external nonReentrant onlyActive returns (uint256 shares) {
-        _syncAlpha();
-        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
-        if (minBetSize != 0 && amountUSDC < minBetSize) revert BetTooSmall();
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 1: Validate and convert range to buckets (ONCE)
-        // ─────────────────────────────────────────────────────────────────────
-        (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
-
-        // Activate any inactive buckets in range (expansion markets only)
-        if (maxBucketCount > 0) {
-            for (uint256 b = startBucket; b <= endBucket; b++) {
-                if (!_isBucketActive(b)) {
-                    _activateBucket(b);
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 2: Calculate fees and net amount
-        // ─────────────────────────────────────────────────────────────────────
-        uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
-        uint256 netAmount = amountUSDC - feesUSDC;
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 3: Compute shares and cost via tree — O(log n)
-        // ─────────────────────────────────────────────────────────────────────
-        uint256 actualCost;
-        {
-            uint256 sumBefore = _tree.totalSum();
-            uint256 rSum = _tree.rangeSum(uint32(startBucket), uint32(endBucket));
-
-            if (targetShares > 0) {
-                // Fast path: verify FE-provided quote is affordable
-                uint256 factor = LMSRCost.sharesToFactor(targetShares, alpha);
-                uint256 sumAfter = sumBefore - rSum + Math.mulDiv(rSum, factor, WAD);
-                uint256 cost = LMSRCost.costFromDelta(alpha, sumBefore, sumAfter);
-                if (cost <= netAmount) {
-                    shares = targetShares;
-                    actualCost = cost;
-                }
-            }
-
-            if (shares == 0) {
-                // Algebraic solve — O(1) replaces 20-iteration binary search
-                shares = LMSRCost.sharesFromCost(alpha, sumBefore, rSum, netAmount);
-                if (shares > 0) {
-                    uint256 factor = LMSRCost.sharesToFactor(shares, alpha);
-                    uint256 sumAfter = sumBefore - rSum + Math.mulDiv(rSum, factor, WAD);
-                    actualCost = LMSRCost.costFromDelta(alpha, sumBefore, sumAfter);
-                }
-            }
-        }
-
-        if (shares < minSharesOut) revert InvalidParameters();
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 4: Validate solvency for all buckets in range
-        // ─────────────────────────────────────────────────────────────────────
-        _validateRangeSolvency(startBucket, endBucket, shares, actualCost);
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 5: Atomic state update
-        // ─────────────────────────────────────────────────────────────────────
-        _applyRangeBuy(startBucket, endBucket, shares, actualCost);
-        
-        // Update fees and volume
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
-        feesCollectedLP += lpFee;
-        lpFeesAccrued += lpFee;
-        feesCollectedProtocol += protocolFee;
-        totalVolume += amountUSDC;
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 6: External interaction LAST (checks-effects-interactions)
-        // ─────────────────────────────────────────────────────────────────────
-        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
-        _routeProtocolFee(protocolFee);
-
-        if (_positionTokenEnabled()) {
-            // Mint ONE unified range token (not per-bucket)
-            IPositionNFT(positionNFT).mint(msg.sender, _tokenIdForRange(startBucket, endBucket), shares);
-        }
-        
-        emit RangeSharesPurchased(marketId, msg.sender, startBucket, endBucket, shares, actualCost);
-    }
-
-    /// @notice Sell shares from a range position (Correlated LMSR)
-    /// @param rangeLower Lower bound in value space (inclusive)
-    /// @param rangeUpper Upper bound in value space (exclusive)
-    /// @param sharesToSell Number of shares to sell (must have this many in ALL buckets)
+    /// @param sharesToSell Number of shares to sell
     /// @param minUsdcOut Minimum USDC to receive (slippage protection)
-    /// @return payoutUSDC Amount of USDC received
     function sellSharesRange(
         uint256 rangeLower,
         uint256 rangeUpper,
         uint256 sharesToSell,
-        uint256 minUsdcOut
+        uint256 minUsdcOut,
+        address recipient
     ) external nonReentrant onlyActive returns (uint256 payoutUSDC) {
+        if (recipient == address(0)) recipient = msg.sender;
         _syncAlpha();
+        if (sharesToSell == 0) revert InvalidParameters();
         if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
 
-        if (sharesToSell == 0) revert InvalidParameters();
-        
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 1: Convert range to buckets
-        // ─────────────────────────────────────────────────────────────────────
         (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
-        
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 2: Validate user has range position token
-        // ─────────────────────────────────────────────────────────────────────
+
+        // Validate user has enough shares in all buckets
         for (uint256 b = startBucket; b <= endBucket; b++) {
             if (buckets[b].shares < sharesToSell) revert InsufficientBalance();
         }
@@ -923,25 +836,20 @@ contract LMSRMarket is ReentrancyGuard {
                 revert InsufficientBalance();
             }
         }
-        
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 3: Calculate sell return using correlated LMSR — O(log n) via tree
-        // ─────────────────────────────────────────────────────────────────────
-        uint256 grossPayout = _calculateRangeSellReturn(
-            startBucket, endBucket, sharesToSell
-        );
 
+        // ── Single-bucket fast path: direct LMSR math ──
+        if (startBucket == endBucket) {
+            return _executeSellSingle(startBucket, sharesToSell, minUsdcOut, recipient);
+        }
+
+        // ── Multi-bucket range path ──
+        uint256 grossPayout = _calculateRangeSellReturn(startBucket, endBucket, sharesToSell);
         uint256 feesUSDC = (grossPayout * feeBps) / 10000;
         payoutUSDC = grossPayout - feesUSDC;
-
         if (payoutUSDC < minUsdcOut) revert InvalidParameters();
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 4: Atomic state update
-        // ─────────────────────────────────────────────────────────────────────
         _applyRangeSell(startBucket, endBucket, sharesToSell, payoutUSDC);
-        
-        // Update fees and volume
+
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
         feesCollectedLP += lpFee;
@@ -949,7 +857,7 @@ contract LMSRMarket is ReentrancyGuard {
         feesCollectedProtocol += protocolFee;
         totalVolume += grossPayout;
 
-        // Solvency check: O(1) fast path unless we sold from the max bucket
+        // Solvency check
         bool affectsMax = false;
         for (uint256 b = startBucket; b <= endBucket; b++) {
             if (b == currentMaxBucketId) { affectsMax = true; break; }
@@ -960,64 +868,96 @@ contract LMSRMarket is ReentrancyGuard {
             _checkSolvency();
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STEP 5: External interaction LAST
-        // ─────────────────────────────────────────────────────────────────────
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(startBucket, endBucket), sharesToSell);
         }
 
         _routeProtocolFee(protocolFee);
-
-        usdcToken.transfer(msg.sender, payoutUSDC);
+        usdcToken.transfer(recipient, payoutUSDC);
 
         emit RangeSharesSold(marketId, msg.sender, startBucket, endBucket, sharesToSell, payoutUSDC);
     }
 
-    /// @notice Claim winnings if your range contains the winning bucket
-    /// @param rangeLower Lower bound of your position (inclusive)
-    /// @param rangeUpper Upper bound of your position (exclusive)
-    /// @param sharesToClaim Number of shares to claim
-    /// @return payoutUSDC Amount of USDC received ($1 per share)
-    function claimRange(
-        uint256 rangeLower,
-        uint256 rangeUpper,
-        uint256 sharesToClaim
-    ) external nonReentrant returns (uint256 payoutUSDC) {
-        if (status != MarketStatus.RESOLVED) revert MarketNotActive();
-        if (sharesToClaim == 0) revert InvalidParameters();
-        
-        // Convert range to buckets
-        (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
-        
-        // Check if winning bucket is within user's range
-        if (winningBucket < startBucket || winningBucket > endBucket) {
-            revert RangeNotWinner();
-        }
-        
-        if (sharesToClaim > buckets[winningBucket].shares) revert InsufficientBalance();
-        if (_positionTokenEnabled()) {
-            uint256 rangeTokenId = _tokenIdForRange(startBucket, endBucket);
-            if (IPositionNFT(positionNFT).balanceOf(msg.sender, rangeTokenId) < sharesToClaim) {
-                revert InsufficientBalance();
-            }
-        }
-        
-        // Payout = shares × $1 (both in 6 decimals)
-        payoutUSDC = sharesToClaim;
-        
-        // Update only the winning bucket's shares (that's what backs the payout)
-        buckets[winningBucket].shares -= sharesToClaim;
+    /// @dev Single-bucket sell: direct LMSR cost function
+    function _executeSellSingle(uint256 bucketId, uint256 sharesToSell, uint256 minPayoutOut, address recipient)
+        internal
+        returns (uint256 payoutUSDC)
+    {
+        uint256 C_before = _calculateCostFunction();
+        uint256 sumOther = _getSumOther(bucketId);
+
+        uint256 newShares = buckets[bucketId].shares - sharesToSell;
+        uint256 q = newShares + PHANTOM_SHARES;
+        uint256 ratio = (q * WAD) / alpha;
+        uint256 newBucketExp = ratio.exp();
+
+        uint256 newSumExp = sumOther + newBucketExp;
+        uint256 lnNewSum = newSumExp.ln();
+        uint256 C_after = (alpha * lnNewSum) / WAD;
+
+        uint256 grossPayoutUSDC = C_before - C_after;
+        uint256 feesUSDC = (grossPayoutUSDC * feeBps) / 10000;
+        payoutUSDC = grossPayoutUSDC - feesUSDC;
+        if (payoutUSDC < minPayoutOut) revert InvalidParameters();
+
+        buckets[bucketId].shares = newShares;
+        _applyTreeSellFactor(uint32(bucketId), uint32(bucketId), sharesToSell);
+
+        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
+        uint256 lpFee = feesUSDC - protocolFee;
+
         poolBalance -= payoutUSDC;
+        feesCollectedLP += lpFee;
+        lpFeesAccrued += lpFee;
+        feesCollectedProtocol += protocolFee;
+        totalVolume += grossPayoutUSDC;
+
+        if (bucketId == currentMaxBucketId) {
+            _scanMaxLiability(true);
+        } else {
+            _checkSolvency();
+        }
 
         if (_positionTokenEnabled()) {
-            // Burn the unified range token
-            IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(startBucket, endBucket), sharesToClaim);
+            IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(bucketId, bucketId), sharesToSell);
         }
-        
-        usdcToken.transfer(msg.sender, payoutUSDC);
-        
-        emit RangeWinningsClaimed(marketId, msg.sender, startBucket, endBucket, sharesToClaim, payoutUSDC);
+
+        _routeProtocolFee(protocolFee);
+        usdcToken.transfer(recipient, payoutUSDC);
+
+        emit RangeSharesSold(marketId, msg.sender, bucketId, bucketId, sharesToSell, payoutUSDC);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNIFIED CLAIM — decode tokenId, check winner, pay full balance
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Claim winnings by presenting your position NFT token ID
+    /// @dev Decodes tokenId to determine range, checks if winning bucket is in range,
+    ///      claims full NFT balance (no partial claims). Works for single and range positions.
+    /// @param tokenId The ERC-1155 position token ID (encodes marketId + bucket range)
+    /// @return payoutUSDC Amount of USDC received ($1 per share)
+    function claim(uint256 tokenId, address recipient) external nonReentrant returns (uint256 payoutUSDC) {
+        if (recipient == address(0)) recipient = msg.sender;
+        if (status != MarketStatus.RESOLVED) revert MarketNotActive();
+
+        (uint256 tokenMarketId, uint256 rangeLower, uint256 rangeUpper) =
+            IPositionNFT(positionNFT).decodeTokenId(tokenId);
+
+        if (tokenMarketId != marketId) revert InvalidParameters();
+        if (winningBucket < rangeLower || winningBucket > rangeUpper) revert RangeNotWinner();
+
+        uint256 balance = IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId);
+        if (balance == 0) revert InsufficientBalance();
+
+        payoutUSDC = balance; // 1 share = 1 USDC (both 6 decimals)
+        buckets[winningBucket].shares -= balance;
+        poolBalance -= payoutUSDC;
+
+        IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
+        usdcToken.transfer(recipient, payoutUSDC);
+
+        emit WinningsClaimed(marketId, msg.sender, payoutUSDC);
     }
 
     /// @notice Get quote for buying shares across a range
@@ -1213,11 +1153,6 @@ contract LMSRMarket is ReentrancyGuard {
         }
     }
 
-    /// @notice Permissionless refresh of maxLiability to current actual maximum
-    /// @dev Useful before harvesting surplus — ensures reserves aren't over-locked
-    function refreshMaxLiability() external {
-        _scanMaxLiability(false);
-    }
 
     function _calculatePrice(uint256 bucketId) internal view returns (uint256) {
         uint256 bucketExp = _tree.leafValue(uint32(bucketId));
@@ -1251,81 +1186,6 @@ contract LMSRMarket is ReentrancyGuard {
         returnUSDC = C_before - C_after; // Already 6 decimals
     }
 
-    /// @notice Preview gross return for selling range shares (view — no state change)
-
-    function sellShares(uint256 bucketId, uint256 sharesToSell, uint256 minPayoutOut)
-        external
-        nonReentrant
-        onlyActive
-        returns (uint256 payoutUSDC)
-    {
-        _syncAlpha();
-
-        if (bucketId >= bucketCount) revert InvalidBucket();
-        if (sharesToSell == 0) revert InvalidParameters();
-        if (sharesToSell > buckets[bucketId].shares) revert InsufficientBalance();
-        if (biddingDeadline != 0 && block.timestamp > biddingDeadline) revert BiddingClosed();
-
-        if (_positionTokenEnabled()) {
-            uint256 tokenId = _tokenIdForBucket(bucketId);
-            if (IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId) < sharesToSell) {
-                revert InsufficientBalance();
-            }
-        }
-        
-        uint256 C_before = _calculateCostFunction(); // 6 decimals
-        
-        // Sui-style sparse cache: O(1) instead of O(n) loop
-        uint256 sumOther = _getSumOther(bucketId);
-        
-        uint256 newShares = buckets[bucketId].shares - sharesToSell; // 6 decimals
-        uint256 q = newShares + PHANTOM_SHARES; // 6 decimals
-        uint256 ratio = (q * WAD) / alpha; // Scale to WAD
-        uint256 newBucketExp = ratio.exp();
-        
-        uint256 newSumExp = sumOther + newBucketExp;
-        uint256 lnNewSum = newSumExp.ln(); // Returns WAD (18 decimals)
-        uint256 C_after = (alpha * lnNewSum) / WAD; // 6 decimals
-        
-        uint256 grossPayoutUSDC = C_before - C_after; // Already 6 decimals
-        
-        uint256 feesUSDC = (grossPayoutUSDC * feeBps) / 10000;
-        payoutUSDC = grossPayoutUSDC - feesUSDC;
-        
-        if (payoutUSDC < minPayoutOut) revert InvalidParameters();
-        
-        buckets[bucketId].shares = newShares;
-
-        // Update tree — O(log n) with chunked factor application
-        _applyTreeSellFactor(uint32(bucketId), uint32(bucketId), sharesToSell);
-        
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
-        
-        poolBalance -= payoutUSDC;
-        feesCollectedLP += lpFee;
-        lpFeesAccrued += lpFee;
-        feesCollectedProtocol += protocolFee;
-        totalVolume += grossPayoutUSDC;
-        
-        // Solvency check: O(1) for common case, O(n) rescan when selling from max bucket
-        if (bucketId == currentMaxBucketId) {
-            _scanMaxLiability(true);
-        } else {
-            _checkSolvency();
-        }
-
-        if (_positionTokenEnabled()) {
-            IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForBucket(bucketId), sharesToSell);
-        }
-
-        _routeProtocolFee(protocolFee);
-        
-        usdcToken.transfer(msg.sender, payoutUSDC);
-        
-        uint256 newPrice = _calculatePrice(bucketId);
-        emit SharesSold(marketId, msg.sender, bucketId, sharesToSell, payoutUSDC, newPrice);
-    }
 
     /// @notice Resolve market with winning outcome value (Sui parity)
     /// @dev Takes a resolution value in the market's value space (e.g., $115,000) and
@@ -1355,37 +1215,6 @@ contract LMSRMarket is ReentrancyGuard {
         resolutionTime = block.timestamp;
 
         emit MarketResolved(marketId, _resolutionValue, calculatedBucket, block.timestamp);
-    }
-
-    /// @notice Claim winnings for a resolved market (winning shares pay $1 each)
-    /// @param bucketId The bucket to claim from
-    /// @param sharesToClaim Number of shares to claim (in WAD 18 decimals)
-    function claimWinnings(uint256 bucketId, uint256 sharesToClaim) external nonReentrant {
-        if (status != MarketStatus.RESOLVED) revert MarketNotActive();
-        if (bucketId != winningBucket) revert InvalidBucket();
-        if (sharesToClaim == 0) revert InvalidParameters();
-
-        if (sharesToClaim > buckets[bucketId].shares) revert InsufficientBalance();
-        if (_positionTokenEnabled()) {
-            uint256 tokenId = _tokenIdForBucket(bucketId);
-            if (IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId) < sharesToClaim) {
-                revert InsufficientBalance();
-            }
-            IPositionNFT(positionNFT).burn(msg.sender, tokenId, sharesToClaim);
-        }
-
-        // Winning shares pay $1 per share: shares and USDC both in 6 decimals
-        // So 1 share = 1 USDC (both in 6 decimals)
-        uint256 payoutUSDC = sharesToClaim; // 6 decimals = 6 decimals
-
-        // Update bucket shares
-        buckets[bucketId].shares -= sharesToClaim;
-        poolBalance -= payoutUSDC;
-
-        // Transfer winnings
-        usdcToken.transfer(msg.sender, payoutUSDC);
-
-        emit WinningsClaimed(marketId, msg.sender, payoutUSDC);
     }
 
     /// @notice Withdraw LP funds after market resolution
