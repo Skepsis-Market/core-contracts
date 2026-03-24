@@ -380,13 +380,16 @@ contract MarketFactoryTest is Test {
         // 10% floor  = 100_000000; use 500_000000 as alphaFinal (50%)
         uint256 poolBalance = 1000_000000;
 
-        // ── Case 1: no decay params → isAlphaDecayConfigured() == false ─────────
+        // ── Case 1: no decay params → decay not configured ─────────
         vm.prank(creator1);
         address mktNoDecay = factory.createMarket(_params(poolBalance, 0, 100, 2, 0, 0));
 
-        assertFalse(LMSRMarket(mktNoDecay).isAlphaDecayConfigured(), "No decay params = no decay");
+        assertFalse(
+            LMSRMarket(mktNoDecay).decayDuration() > 0 && LMSRMarket(mktNoDecay).alphaFinal() < LMSRMarket(mktNoDecay).alphaInitial(),
+            "No decay params = no decay"
+        );
 
-        // ── Case 2: decay params provided → isAlphaDecayConfigured() == true ────
+        // ── Case 2: decay params provided → decay configured ────
         MarketFactory.MarketParams memory p = _params(poolBalance, 0, 100, 2, 0, 0);
         p.decayDuration = 7 days;
         p.decayStart    = block.timestamp;
@@ -395,7 +398,10 @@ contract MarketFactoryTest is Test {
         vm.prank(creator1);
         address mktDecay = factory.createMarket(p);
 
-        assertTrue(LMSRMarket(mktDecay).isAlphaDecayConfigured(), "Decay params provided = configured");
+        assertTrue(
+            LMSRMarket(mktDecay).decayDuration() > 0 && LMSRMarket(mktDecay).alphaFinal() < LMSRMarket(mktDecay).alphaInitial(),
+            "Decay params provided = configured"
+        );
         assertEq(LMSRMarket(mktDecay).alphaFinal(), 500_000000, "alphaFinal set correctly");
         assertEq(LMSRMarket(mktDecay).decayDuration(), 7 days, "decayDuration set correctly");
     }

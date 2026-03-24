@@ -69,7 +69,7 @@ contract BuyScript is Script {
         uint256 mid     = market.marketId();
         uint256 tokenId = tokenIdForBucket(mid, BUCKET_ID);
 
-        LMSRMarket.Bucket memory b = market.getBucket(BUCKET_ID);
+        (uint256 bShares, uint256 bLower, uint256 bUpper) = market.buckets(BUCKET_ID);
 
         console.log("=================================================");
         console.log("  Buy Shares");
@@ -79,9 +79,9 @@ contract BuyScript is Script {
         console.log("Market status:   ", uint256(market.status()));
         console.log("Trader:          ", trader);
         console.log("Bucket:          ", BUCKET_ID);
-        console.log("  range:         ", b.lowerBound, "-", b.upperBound);
+        console.log("  range:         ", bLower, "-", bUpper);
         console.log("  value unit:    ", market.valueUnit());
-        console.log("  shares before: ", b.shares);
+        console.log("  shares before: ", bShares);
         console.log("Spending:        ", AMOUNT_USDC / 1e6, "USDC");
         console.log("Trader USDC bal: ", usdc.balanceOf(trader) / 1e6, "USDC");
         console.log("Trader NFT bal:  ", nft.balanceOf(trader, tokenId));
@@ -95,7 +95,8 @@ contract BuyScript is Script {
         usdc.mint(trader, AMOUNT_USDC);
         usdc.approve(address(market), AMOUNT_USDC);
 
-        uint256 sharesMinted = market.buyShares(BUCKET_ID, AMOUNT_USDC, MIN_SHARES);
+        uint256 lower = market.marketMin() + (BUCKET_ID * market.bucketWidth());
+        uint256 sharesMinted = market.buySharesRange(lower, lower + market.bucketWidth(), AMOUNT_USDC, MIN_SHARES, 0, address(0));
 
         vm.stopBroadcast();
 
@@ -140,7 +141,7 @@ contract SellScript is Script {
         uint256 tokenId = tokenIdForBucket(mid, BUCKET_ID);
         uint256 nftBal  = nft.balanceOf(trader, tokenId);
 
-        LMSRMarket.Bucket memory b = market.getBucket(BUCKET_ID);
+        (uint256 bShares, uint256 bLower, uint256 bUpper) = market.buckets(BUCKET_ID);
 
         console.log("=================================================");
         console.log("  Sell Shares");
@@ -149,9 +150,9 @@ contract SellScript is Script {
         console.log("Market ID:       ", mid);
         console.log("Trader:          ", trader);
         console.log("Bucket:          ", BUCKET_ID);
-        console.log("  range:         ", b.lowerBound, "-", b.upperBound);
+        console.log("  range:         ", bLower, "-", bUpper);
         console.log("  value unit:    ", market.valueUnit());
-        console.log("  bucket shares: ", b.shares);
+        console.log("  bucket shares: ", bShares);
         console.log("Trader NFT bal:  ", nftBal);
         console.log("Shares to sell:  ", SHARES_TO_SELL);
         console.log("Trader USDC bal: ", usdc.balanceOf(trader) / 1e6, "USDC");
@@ -168,7 +169,8 @@ contract SellScript is Script {
 
         vm.startBroadcast(pk);
 
-        uint256 payout = market.sellShares(BUCKET_ID, SHARES_TO_SELL, MIN_PAYOUT);
+        uint256 lower = market.marketMin() + (BUCKET_ID * market.bucketWidth());
+        uint256 payout = market.sellSharesRange(lower, lower + market.bucketWidth(), SHARES_TO_SELL, MIN_PAYOUT, address(0));
 
         vm.stopBroadcast();
 

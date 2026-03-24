@@ -65,6 +65,16 @@ contract RangeLMSRTest is Test {
         // Fund trader
         usdc.mint(trader, 1_000_000000); // $1,000
     }
+
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _buyBucket(LMSRMarket m, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = m.marketMin() + (bucketId * m.bucketWidth());
+        return m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
+    }
     
     function test_marketBoundsSetCorrectly() public view {
         assertEq(market.marketMin(), 110000, "Market min should be 110000");
@@ -102,7 +112,8 @@ contract RangeLMSRTest is Test {
             114800,    // rangeUpper
             10_000000, // $10
             0,         // minSharesOut (no slippage protection for test)
-            0          // targetShares (0 = binary search)
+            0,         // targetShares (0 = binary search)
+            address(0) // recipient (0 = msg.sender)
         );
         vm.stopPrank();
         
@@ -127,7 +138,7 @@ contract RangeLMSRTest is Test {
         
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         vm.stopPrank();
         
         // Get bucket shares after
@@ -186,14 +197,14 @@ contract RangeLMSRTest is Test {
         // RANGE BUY: $10 across 3 buckets atomically
         vm.startPrank(trader);
         usdc.approve(address(marketRange), 10_000000);
-        uint256 sharesRange = marketRange.buySharesRange(114500, 114800, 10_000000, 0, 0);
+        uint256 sharesRange = marketRange.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         
         // SINGLE BUYS: $3.33 per bucket (same total $10)
         usdc.approve(address(marketSingle), 10_000000);
         uint256 amountPerBucket = uint256(10_000000) / 3;
-        uint256 sharesSingle1 = marketSingle.buyShares(45, amountPerBucket, 0);
-        uint256 sharesSingle2 = marketSingle.buyShares(46, amountPerBucket, 0);
-        uint256 sharesSingle3 = marketSingle.buyShares(47, amountPerBucket, 0);
+        uint256 sharesSingle1 = _buyBucket(marketSingle, 45, amountPerBucket, 0);
+        uint256 sharesSingle2 = _buyBucket(marketSingle, 46, amountPerBucket, 0);
+        uint256 sharesSingle3 = _buyBucket(marketSingle, 47, amountPerBucket, 0);
         vm.stopPrank();
         
         console.log("=== Range Buy vs Single Buys ===");
@@ -218,60 +229,50 @@ contract RangeLMSRTest is Test {
         console.log("  Single buyer: $10 cost, only wins on specific bucket");
     }
     
-    function test_claimRange_winningBucketInRange() public {
+    function test_resolveRange_winningBucketInRange() public {
         // Buy range
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         vm.stopPrank();
-        
+
         // Resolve with value 114600 (bucket 46, within range 45-47)
         vm.prank(creator);
         market.resolveMarket(114600);
-        
-        // Claim
-        uint256 traderBalBefore = usdc.balanceOf(trader);
-        vm.prank(trader);
-        uint256 payout = market.claimRange(114500, 114800, shares);
-        uint256 traderBalAfter = usdc.balanceOf(trader);
-        
-        console.log("=== Claim Range ===");
-        console.log("Shares:", shares);
-        console.log("Payout:", payout);
-        console.log("Balance change:", traderBalAfter - traderBalBefore);
-        
-        assertEq(payout, shares, "Payout should equal shares (1:1)");
-        assertEq(traderBalAfter - traderBalBefore, payout, "Balance should increase by payout");
+
+        // Verify resolution
+        assertEq(market.winningBucket(), 46);
+        assertTrue(shares > 0, "Should have received shares");
+        // NOTE: claim() requires PositionNFT; tested in LMSRMarketPositionAccounting.t.sol
     }
-    
-    function test_claimRange_winningBucketOutsideRange_reverts() public {
+
+    function test_resolveRange_winningBucketOutsideRange() public {
         // Buy range
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
+        market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         vm.stopPrank();
-        
+
         // Resolve with value 115000 (bucket 50, OUTSIDE range 45-47)
         vm.prank(creator);
         market.resolveMarket(115000);
-        
-        // Claim should fail
-        vm.prank(trader);
-        vm.expectRevert(LMSRMarket.RangeNotWinner.selector);
-        market.claimRange(114500, 114800, shares);
+
+        // Verify winning bucket is outside the range
+        assertEq(market.winningBucket(), 50);
+        assertTrue(market.winningBucket() < 45 || market.winningBucket() > 47, "Winning bucket outside range");
     }
     
     function test_sellSharesRange() public {
         // Buy range first
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         
         // Get balance before sell
         uint256 balBefore = usdc.balanceOf(trader);
         
         // Sell immediately
-        uint256 payout = market.sellSharesRange(114500, 114800, shares, 0);
+        uint256 payout = market.sellSharesRange(114500, 114800, shares, 0, address(0));
         vm.stopPrank();
         
         uint256 balAfter = usdc.balanceOf(trader);
@@ -291,7 +292,7 @@ contract RangeLMSRTest is Test {
         // Buy range first
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
-        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0);
+        uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         
         // Get bucket shares before sell
         (uint256 sharesBucket45Before,,) = market.buckets(45);
@@ -299,7 +300,7 @@ contract RangeLMSRTest is Test {
         (uint256 sharesBucket47Before,,) = market.buckets(47);
         
         // Sell
-        market.sellSharesRange(114500, 114800, shares, 0);
+        market.sellSharesRange(114500, 114800, shares, 0, address(0));
         vm.stopPrank();
         
         // Get bucket shares after sell

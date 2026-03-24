@@ -941,20 +941,30 @@ contract LMSRMarket is ReentrancyGuard {
         if (recipient == address(0)) recipient = msg.sender;
         if (status != MarketStatus.RESOLVED) revert MarketNotActive();
 
-        (uint256 tokenMarketId, uint256 rangeLower, uint256 rangeUpper) =
-            IPositionNFT(positionNFT).decodeTokenId(tokenId);
+        // Decode tokenId inline: (marketId << 128) | (rangeLower << 64) | rangeUpper
+        uint256 tokenMarketId = tokenId >> 128;
+        uint256 rangeLower = uint256(uint64(tokenId >> 64));
+        uint256 rangeUpper = uint256(uint64(tokenId));
 
         if (tokenMarketId != marketId) revert InvalidParameters();
         if (winningBucket < rangeLower || winningBucket > rangeUpper) revert RangeNotWinner();
 
-        uint256 balance = IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId);
+        uint256 balance;
+        if (_positionTokenEnabled()) {
+            balance = IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId);
+        } else {
+            // No NFT — use winning bucket shares as claim amount
+            balance = buckets[winningBucket].shares;
+        }
         if (balance == 0) revert InsufficientBalance();
 
-        payoutUSDC = balance; // 1 share = 1 USDC (both 6 decimals)
+        payoutUSDC = balance;
         buckets[winningBucket].shares -= balance;
         poolBalance -= payoutUSDC;
 
-        IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
+        if (_positionTokenEnabled()) {
+            IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
+        }
         usdcToken.transfer(recipient, payoutUSDC);
 
         emit WinningsClaimed(marketId, msg.sender, payoutUSDC);

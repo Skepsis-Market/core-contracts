@@ -39,7 +39,7 @@ contract LMSRMarketTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        
+
         uint256[] memory bucketRanges = new uint256[](5);
         bucketRanges[0] = 0;
         bucketRanges[1] = 25;
@@ -61,9 +61,24 @@ contract LMSRMarketTest is Test {
             _defaultMetadata(),
             address(0xFEE)
         );
-        
+
         // Simulate initial LP deposit
         usdc.mint(address(market), poolBalance);
+    }
+
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
+    function _claimBucket(uint256 bucketId) internal returns (uint256) {
+        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
+        return market.claim(tokenId, address(0));
     }
 
     function test_constructor_initializesCorrectly() public view {
@@ -128,37 +143,23 @@ contract LMSRMarketTest is Test {
         // Shares are now in 6 decimals, not WAD
         uint256 expectedShares = poolBalance / 4; // 6 decimals
         for (uint256 i = 0; i < 4; i++) {
-            LMSRMarket.Bucket memory bucket = market.getBucket(i);
-            assertEq(bucket.shares, expectedShares);
+            (uint256 bShares,,) = market.buckets(i);
+            assertEq(bShares, expectedShares);
         }
     }
 
     function test_initialState_bucketRanges() public view {
-        LMSRMarket.Bucket memory bucket0 = market.getBucket(0);
-        assertEq(bucket0.lowerBound, 0);
-        assertEq(bucket0.upperBound, 25);
+        (, uint256 bLower0, uint256 bUpper0) = market.buckets(0);
+        assertEq(bLower0, 0);
+        assertEq(bUpper0, 25);
 
-        LMSRMarket.Bucket memory bucket1 = market.getBucket(1);
-        assertEq(bucket1.lowerBound, 25);
-        assertEq(bucket1.upperBound, 50);
+        (, uint256 bLower1, uint256 bUpper1) = market.buckets(1);
+        assertEq(bLower1, 25);
+        assertEq(bUpper1, 50);
 
-        LMSRMarket.Bucket memory bucket3 = market.getBucket(3);
-        assertEq(bucket3.lowerBound, 75);
-        assertEq(bucket3.upperBound, 100);
-    }
-
-    function test_initialState_cachedSumExpSet() public view {
-        uint256 cachedSum = market.getCachedSumExp();
-        assertGt(cachedSum, 0);
-        assertFalse(market.isSumExpDirty());
-    }
-
-    function test_getBucket_revertsOnInvalidId() public {
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.getBucket(4);
-
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.getBucket(100);
+        (, uint256 bLower3, uint256 bUpper3) = market.buckets(3);
+        assertEq(bLower3, 75);
+        assertEq(bUpper3, 100);
     }
 
     function test_initialState_isSolvent() public view {
@@ -184,14 +185,14 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 expectedShares = market.calculateSharesForCost(0, netCostUSDC);
         
-        uint256 sharesMinted = market.buyShares(0, costUSDC, expectedShares);
+        uint256 sharesMinted = _buyBucket(0, costUSDC, expectedShares);
         vm.stopPrank();
-        
+
         assertEq(sharesMinted, expectedShares);
-        LMSRMarket.Bucket memory bucket = market.getBucket(0);
+        (uint256 bShares,,) = market.buckets(0);
         // Shares are now in 6 decimals, not WAD
         uint256 initialShares = poolBalance / 4; // 6 decimals
-        assertEq(bucket.shares, initialShares + sharesMinted);
+        assertEq(bShares, initialShares + sharesMinted);
     }
 
     function test_buyShares_updatesPoolBalance() public {
@@ -205,7 +206,7 @@ contract LMSRMarketTest is Test {
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, costUSDC, 0);
+        _buyBucket(0, costUSDC, 0);
         vm.stopPrank();
         
         assertEq(market.poolBalance(), poolBefore + netCost);
@@ -221,7 +222,7 @@ contract LMSRMarketTest is Test {
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, costUSDC, 0);
+        _buyBucket(0, costUSDC, 0);
         vm.stopPrank();
         
         assertEq(market.feesCollectedLP(), lpFee);
@@ -235,26 +236,29 @@ contract LMSRMarketTest is Test {
         uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 expectedShares = market.calculateSharesForCost(0, netCostUSDC);
-        
+
+        uint256 lower = market.marketMin();
+        uint256 width = market.bucketWidth();
+
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        market.buyShares(0, costUSDC, expectedShares + 1);
+        market.buySharesRange(lower, lower + width, costUSDC, expectedShares + 1, 0, address(0));
         vm.stopPrank();
     }
 
-    function test_buyShares_updatesSumExpCache() public {
+    function test_buyShares_updatesState() public {
         usdc.mint(buyer, 100_000000);
 
-        uint256 sumExpBefore = market.getCachedSumExp();
-        
+        (uint256 sharesBefore,,) = market.buckets(0);
+
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, 10_000000, 0);
+        _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
-        
-        uint256 sumExpAfter = market.getCachedSumExp();
-        assertGt(sumExpAfter, sumExpBefore);
+
+        (uint256 sharesAfter,,) = market.buckets(0);
+        assertGt(sharesAfter, sharesBefore);
     }
 
     function test_calculatePrice_returnsValidProbability() public view {
@@ -269,9 +273,15 @@ contract LMSRMarketTest is Test {
     }
 
     function getPrice(uint256 bucketId) external view returns (uint256) {
-        uint256 sumExp = market.getCachedSumExp();
-        LMSRMarket.Bucket memory bucket = market.getBucket(bucketId);
-        uint256 exponent = bucket.shares.divWad(market.alpha());
+        // Compute sumExp manually from all buckets
+        uint256 sumExp = 0;
+        for (uint256 i = 0; i < market.bucketCount(); i++) {
+            (uint256 bShares,,) = market.buckets(i);
+            uint256 exp_i = bShares.divWad(market.alpha()).exp();
+            sumExp += exp_i;
+        }
+        (uint256 targetShares,,) = market.buckets(bucketId);
+        uint256 exponent = targetShares.divWad(market.alpha());
         uint256 bucketExp = exponent.exp();
         return bucketExp.divWad(sumExp);
     }
@@ -287,7 +297,7 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         vm.stopPrank();
         
         uint256 returnUSDC = market.calculateReturnForShares(0, sharesBought);
@@ -306,10 +316,10 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 balanceBefore = usdc.balanceOf(buyer);
-        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        uint256 payoutUSDC = _sellBucket(0, sharesBought, 0);
         uint256 balanceAfter = usdc.balanceOf(buyer);
         vm.stopPrank();
         
@@ -328,10 +338,10 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 poolBefore = market.poolBalance();
-        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        uint256 payoutUSDC = _sellBucket(0, sharesBought, 0);
         vm.stopPrank();
         
         assertEq(market.poolBalance(), poolBefore - payoutUSDC);
@@ -348,12 +358,12 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 lpFeesBefore = market.feesCollectedLP();
         uint256 protocolFeesBefore = market.feesCollectedProtocol();
         
-        market.sellShares(0, sharesBought, 0);
+        _sellBucket(0, sharesBought, 0);
         vm.stopPrank();
         
         assertGt(market.feesCollectedLP(), lpFeesBefore);
@@ -371,19 +381,23 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 expectedReturn = market.calculateReturnForShares(0, sharesBought);
         
+        uint256 lower = market.marketMin();
+        uint256 width = market.bucketWidth();
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        market.sellShares(0, sharesBought, expectedReturn + 1);
+        market.sellSharesRange(lower, lower + width, sharesBought, expectedReturn + 1, address(0));
         vm.stopPrank();
     }
 
     function test_sellShares_revertsIfInsufficientShares() public {
+        uint256 lower = market.marketMin();
+        uint256 width = market.bucketWidth();
         vm.startPrank(buyer);
         vm.expectRevert(LMSRMarket.InsufficientBalance.selector);
-        market.sellShares(0, 1000e18, 0);
+        market.sellSharesRange(lower, lower + width, 1000e18, 0, address(0));
         vm.stopPrank();
     }
 
@@ -400,8 +414,8 @@ contract LMSRMarketTest is Test {
         
         uint256 balanceStart = usdc.balanceOf(buyer);
         
-        market.buyShares(0, costUSDC, sharesBought);
-        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        _buyBucket(0, costUSDC, sharesBought);
+        uint256 payoutUSDC = _sellBucket(0, sharesBought, 0);
         
         uint256 balanceEnd = usdc.balanceOf(buyer);
         vm.stopPrank();
@@ -448,82 +462,7 @@ contract LMSRMarketTest is Test {
         market.resolveMarket(999); // value 999 is outside [0, 100]
     }
 
-    function test_claimWinnings_pays1PerShare() public {
-        // User buys shares in bucket 2 (smaller amount to avoid solvency issues)
-        uint256 bucketId = 2;
-        uint256 buyAmount = 100 * 1e6; // $100 (not $1000 to stay within solvency)
-        
-        usdc.mint(user1, buyAmount);
-        vm.startPrank(user1);
-        usdc.approve(address(market), buyAmount);
-        uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
-        console.log("sharesMinted (6 dec):", sharesMinted);
-        console.log("sharesMinted in USDC units:", sharesMinted / 1e6);
-        vm.stopPrank();
-        
-        // Creator resolves with value 50 (bucket 2)
-        vm.prank(creator);
-        market.resolveMarket(50); // value 50 = bucket 2
-        
-        // User claims winnings
-        uint256 balanceBefore = usdc.balanceOf(user1);
-        console.log("balanceBefore:", balanceBefore);
-        vm.prank(user1);
-        market.claimWinnings(bucketId, sharesMinted);
-        
-        uint256 balanceAfter = usdc.balanceOf(user1);
-        uint256 payout = balanceAfter - balanceBefore;
-        console.log("balanceAfter:", balanceAfter);
-        console.log("payout:", payout);
-        
-        // Should receive exactly $1 per share - shares and USDC both in 6 decimals
-        // So payout = shares (both 6 decimals)
-        uint256 expectedPayout = sharesMinted; // Both 6 decimals now
-        console.log("expectedPayout:", expectedPayout);
-        assertEq(payout, expectedPayout, "Should pay $1 per winning share");
-    }
-
-    function test_claimWinnings_revertsIfNotResolved() public {
-        vm.prank(user1);
-        vm.expectRevert(LMSRMarket.MarketNotActive.selector);
-        market.claimWinnings(0, 1000);
-    }
-
-    function test_claimWinnings_revertsIfWrongBucket() public {
-        // Resolve with value 25 (bucket 1)
-        vm.prank(creator);
-        market.resolveMarket(25);
-        
-        // Try to claim from bucket 2
-        vm.prank(user1);
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.claimWinnings(2, 1000);
-    }
-
-    function test_claimWinnings_updatesPoolBalance() public {
-        uint256 bucketId = 1;
-        uint256 buyAmount = 100 * 1e6; // $100
-        
-        usdc.mint(user1, buyAmount);
-        vm.startPrank(user1);
-        usdc.approve(address(market), buyAmount);
-        uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
-        vm.stopPrank();
-        
-        uint256 poolBefore = market.poolBalance();
-        
-        vm.prank(creator);
-        market.resolveMarket(25); // value 25 = bucket 1
-        
-        vm.prank(user1);
-        market.claimWinnings(bucketId, sharesMinted);
-        
-        uint256 poolAfter = market.poolBalance();
-        // Shares are in 6 decimals, payout = shares (both 6 decimals)
-        uint256 expectedDecrease = sharesMinted;
-        
-        assertEq(poolBefore - poolAfter, expectedDecrease, "Pool should decrease by payout amount");
-    }
+    // NOTE: claim tests moved to LMSRMarketPositionAccounting.t.sol (requires real PositionNFT)
 
     // ============================================
     // LP WITHDRAWAL TESTS
@@ -537,18 +476,17 @@ contract LMSRMarketTest is Test {
         usdc.mint(user1, buyAmount);
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
-        market.buyShares(bucketId, buyAmount, 0);
+        _buyBucket(bucketId, buyAmount, 0);
         vm.stopPrank();
-        
+
         uint256 poolBeforeResolution = market.poolBalance();
-        
+
         // Resolve market with value 25 (bucket 1)
         vm.prank(creator);
         market.resolveMarket(25);
-        
+
         // Get winning shares - now in 6 decimals
-        LMSRMarket.Bucket memory winningBucket = market.getBucket(bucketId);
-        uint256 winningShares = winningBucket.shares;
+        (uint256 winningShares,,) = market.buckets(bucketId);
         // Shares are 6 decimals, payout = shares (both 6 decimals)
         uint256 expectedPayouts = winningShares;
         uint256 expectedLP = poolBeforeResolution - expectedPayouts;
@@ -586,7 +524,7 @@ contract LMSRMarketTest is Test {
         usdc.mint(user1, buyAmount);
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
-        market.buyShares(bucketId, buyAmount, 0);
+        _buyBucket(bucketId, buyAmount, 0);
         vm.stopPrank();
         
         vm.prank(creator);
@@ -609,7 +547,7 @@ contract LMSRMarketTest is Test {
         usdc.mint(user1, buyAmount);
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
-        market.buyShares(bucketId, buyAmount, 0);
+        _buyBucket(bucketId, buyAmount, 0);
         vm.stopPrank();
         
         (int256 unrealizedProfit, int256 roi, uint256 feesEarned) = market.getLPProfitability();
@@ -637,7 +575,7 @@ contract LMSRMarketTest is Test {
             
             vm.startPrank(trader);
             usdc.approve(address(market), buyAmount);
-            market.buyShares(i % 4, buyAmount, 0);
+            _buyBucket(i % 4, buyAmount, 0);
             vm.stopPrank();
         }
         

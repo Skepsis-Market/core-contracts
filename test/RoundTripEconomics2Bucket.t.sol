@@ -70,6 +70,16 @@ contract RoundTripEconomics2BucketTest is Test {
         usdc.mint(TRADER, STARTING_TRADER_USDC);
     }
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
     function test_report_buy10_and_sell_immediately_table() public {
         uint256 bucketId = 1;
 
@@ -82,13 +92,13 @@ contract RoundTripEconomics2BucketTest is Test {
         _logHeader();
         _logRow("0:init", "none", 0, 0, s0, s0);
 
-        uint256 sharesBought = market.buyShares(bucketId, grossCostToBuyAtLeast10, 0);
+        uint256 sharesBought = _buyBucket(bucketId, grossCostToBuyAtLeast10, 0);
         Snapshot memory s1 = _snapshot(bucketId);
         _logRow("1:buy", "buyShares", grossCostToBuyAtLeast10, sharesBought, s0, s1);
 
         assertGe(sharesBought, TARGET_SHARES, "Buy should mint at least 10 shares");
 
-        uint256 payout = market.sellShares(bucketId, TARGET_SHARES, 0);
+        uint256 payout = _sellBucket(bucketId, TARGET_SHARES, 0);
         Snapshot memory s2 = _snapshot(bucketId);
         _logRow("2:sell", "sellShares", payout, TARGET_SHARES, s1, s2);
 

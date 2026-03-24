@@ -40,31 +40,34 @@ contract SolvencyHandler is Test {
         traderIndex = bound(traderIndex, 0, traders.length - 1);
         bucketId = bound(bucketId, 0, market.bucketCount() - 1);
         amountUSDC = bound(amountUSDC, 10_000000, 10000_000000); // $10 to $10,000
-        
+
         address trader = traders[traderIndex];
-        
+
         // Mint USDC if needed
         if (usdc.balanceOf(trader) < amountUSDC) {
             usdc.mint(trader, amountUSDC * 2);
         }
-        
+
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
+
         // Try to buy (may revert due to slippage, which is OK)
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        
-        try market.buyShares(bucketId, amountUSDC, 0) {
+
+        try market.buySharesRange(lower, upper, amountUSDC, 0, 0, address(0)) {
             totalBuys++;
             tradeCount++;
         } catch {
             // Trade reverted (e.g., solvency violation, slippage), that's fine
         }
-        
+
         vm.stopPrank();
-        
+
         // Update ghost variables
         _updateGhostVariables();
     }
-    
+
     /// @notice Randomly sell shares from a random bucket
     /// @param traderIndex Index of trader to execute the sell
     /// @param bucketId Bucket to sell from
@@ -74,26 +77,29 @@ contract SolvencyHandler is Test {
         traderIndex = bound(traderIndex, 0, traders.length - 1);
         bucketId = bound(bucketId, 0, market.bucketCount() - 1);
         sharePercent = bound(sharePercent, 1, 100);
-        
+
         // Get bucket shares
         (uint256 bucketShares,,) = market.buckets(bucketId);
         if (bucketShares == 0) return; // Nothing to sell
-        
+
         // Calculate shares to sell (percentage of bucket shares)
         uint256 sharesToSell = (bucketShares * sharePercent) / 100;
         if (sharesToSell == 0) return;
-        
+
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
+
         address trader = traders[traderIndex];
-        
+
         // Try to sell (may revert, which is OK)
         vm.prank(trader);
-        try market.sellShares(bucketId, sharesToSell, 0) {
+        try market.sellSharesRange(lower, upper, sharesToSell, 0, address(0)) {
             totalSells++;
             tradeCount++;
         } catch {
             // Trade reverted, that's fine
         }
-        
+
         // Update ghost variables
         _updateGhostVariables();
     }

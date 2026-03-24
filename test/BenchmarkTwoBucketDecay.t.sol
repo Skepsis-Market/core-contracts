@@ -27,6 +27,15 @@ contract BenchmarkTwoBucketDecayTest is Test {
     uint256 internal constant ONE_SHARE = 1_000000; // 1 share in 6 decimals
     uint256 internal constant ONE_PERCENT_WAD = 0.01e18;
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
     function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
         return LMSRMarket.MarketMetadata({
             name: "",
@@ -155,7 +164,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
                 break;
             }
 
-            uint256 sharesMinted = market.buyShares(bucketId, stepSpend, 0);
+            uint256 sharesMinted = _buyBucket(bucketId, stepSpend, 0);
             cumulativeSpend += stepSpend;
             _logTableRow(step, cumulativeSpend, sharesMinted, "buyShares(1,100e6,0)");
         }
@@ -175,8 +184,17 @@ contract BenchmarkTwoBucketDecayTest is Test {
         (uint256 shares,,) = market.buckets(bucketId);
         uint256 ratio = ((shares + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
         uint256 bucketExp = ratio.exp();
-        uint256 sumExp = market.getCachedSumExp();
+        uint256 sumExp = _computeSumExp();
         return (bucketExp * 1e18) / sumExp;
+    }
+
+    function _computeSumExp() internal view returns (uint256 sumExp) {
+        uint256 n = market.bucketCount();
+        for (uint256 i = 0; i < n; i++) {
+            (uint256 s,,) = market.buckets(i);
+            uint256 r = ((s + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
+            sumExp += r.exp();
+        }
     }
 
     function _costForOneShare(uint256 bucketId) internal view returns (uint256) {
@@ -217,7 +235,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
             if (p >= lower && p <= upper) break;
 
             if (p < target) {
-                market.buyShares(bucketId, 100_000000, 0); // $100 step
+                _buyBucket(bucketId, 100_000000, 0); // $100 step
             } else {
                 break;
             }

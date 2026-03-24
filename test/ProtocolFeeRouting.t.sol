@@ -54,13 +54,18 @@ contract ProtocolFeeRoutingTest is Test {
         usdc.mint(buyer, 100_000000);
     }
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
     function test_protocolCollector_receivesFeeOnBuy() public {
         address collector = market.protocolFeeCollector();
         uint256 collectorBefore = usdc.balanceOf(collector);
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, 10_000000, 0);
+        _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
 
         uint256 collectorAfter = usdc.balanceOf(collector);

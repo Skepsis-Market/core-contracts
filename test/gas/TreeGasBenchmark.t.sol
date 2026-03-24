@@ -55,11 +55,22 @@ contract TreeGasBenchmarkTest is Test {
     //                    SINGLE BUCKET OPERATIONS
     // ═══════════════════════════════════════════════════════════════════
 
+    function _buyBucket(LMSRMarket market, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+    function _sellBucket(LMSRMarket market, uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
     function test_gas_buyShares_single_19buckets() public {
         LMSRMarket market = _createMarket(19);
+        uint256 lower = market.marketMin() + (5 * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.buyShares(5, 100_000000, 0); // $100 buy on bucket 5
+        market.buySharesRange(lower, upper, 100_000000, 0, 0, address(0)); // $100 buy on bucket 5
         uint256 g1 = gasleft();
         console.log("buyShares (single, 19 buckets):", g0 - g1);
     }
@@ -67,14 +78,17 @@ contract TreeGasBenchmarkTest is Test {
     function test_gas_sellShares_single_19buckets() public {
         LMSRMarket market = _createMarket(19);
         // Buy first
-        vm.prank(trader);
-        market.buyShares(5, 500_000000, 0);
+        vm.startPrank(trader);
+        _buyBucket(market, 5, 500_000000, 0);
+        vm.stopPrank();
         // Sell
         (uint256 bShares,,) = market.buckets(5);
         uint256 shares = bShares > POOL / 19 ? (bShares - POOL / 19) / 2 : 1;
+        uint256 lower = market.marketMin() + (5 * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.sellShares(5, shares / 2, 0);
+        market.sellSharesRange(lower, upper, shares / 2, 0, address(0));
         uint256 g1 = gasleft();
         console.log("sellShares (single, 19 buckets):", g0 - g1);
     }
@@ -89,7 +103,7 @@ contract TreeGasBenchmarkTest is Test {
         (uint256 quotedShares,,) = market.getQuoteForRange(103_000, 106_000, 200_000000);
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.buySharesRange(103_000, 106_000, 200_000000, 0, quotedShares);
+        market.buySharesRange(103_000, 106_000, 200_000000, 0, quotedShares, address(0));
         uint256 g1 = gasleft();
         console.log("buySharesRange (3 buckets, fast path):", g0 - g1);
     }
@@ -98,7 +112,7 @@ contract TreeGasBenchmarkTest is Test {
         LMSRMarket market = _createMarket(19);
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.buySharesRange(103_000, 106_000, 200_000000, 0, 0);
+        market.buySharesRange(103_000, 106_000, 200_000000, 0, 0, address(0));
         uint256 g1 = gasleft();
         console.log("buySharesRange (3 buckets, algebraic):", g0 - g1);
     }
@@ -108,7 +122,7 @@ contract TreeGasBenchmarkTest is Test {
         (uint256 quotedShares,,) = market.getQuoteForRange(100_000, 110_000, 500_000000);
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.buySharesRange(100_000, 110_000, 500_000000, 0, quotedShares);
+        market.buySharesRange(100_000, 110_000, 500_000000, 0, quotedShares, address(0));
         uint256 g1 = gasleft();
         console.log("buySharesRange (10 buckets, fast path):", g0 - g1);
     }
@@ -117,7 +131,7 @@ contract TreeGasBenchmarkTest is Test {
         LMSRMarket market = _createMarket(19);
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.buySharesRange(100_000, 110_000, 500_000000, 0, 0);
+        market.buySharesRange(100_000, 110_000, 500_000000, 0, 0, address(0));
         uint256 g1 = gasleft();
         console.log("buySharesRange (10 buckets, algebraic):", g0 - g1);
     }
@@ -126,7 +140,7 @@ contract TreeGasBenchmarkTest is Test {
         LMSRMarket market = _createMarket(19);
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.buySharesRange(100_000, 119_000, 500_000000, 0, 0);
+        market.buySharesRange(100_000, 119_000, 500_000000, 0, 0, address(0));
         uint256 g1 = gasleft();
         console.log("buySharesRange (19 buckets, algebraic):", g0 - g1);
     }
@@ -135,12 +149,12 @@ contract TreeGasBenchmarkTest is Test {
         LMSRMarket market = _createMarket(19);
         // Buy first
         vm.prank(trader);
-        market.buySharesRange(100_000, 110_000, 500_000000, 0, 0);
+        market.buySharesRange(100_000, 110_000, 500_000000, 0, 0, address(0));
         // Sell half
         (uint256 shares,,) = market.getQuoteForRange(100_000, 110_000, 500_000000);
         vm.prank(trader);
         uint256 g0 = gasleft();
-        market.sellSharesRange(100_000, 110_000, shares / 4, 0);
+        market.sellSharesRange(100_000, 110_000, shares / 4, 0, address(0));
         uint256 g1 = gasleft();
         console.log("sellSharesRange (10 buckets):", g0 - g1);
     }

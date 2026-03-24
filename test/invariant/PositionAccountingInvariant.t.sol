@@ -30,9 +30,12 @@ contract PositionHandler is Test {
             usdc.mint(trader, amountUSDC * 2);
         }
 
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
+
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buyShares(bucketId, amountUSDC, 0) {} catch {}
+        try market.buySharesRange(lower, upper, amountUSDC, 0, 0, address(0)) {} catch {}
         vm.stopPrank();
     }
 
@@ -42,15 +45,18 @@ contract PositionHandler is Test {
         percentBps = bound(percentBps, 1, 10000);
 
         address trader = traders[traderIndex];
-        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | uint256(uint128(bucketId));
+        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
         uint256 balance = positionNFT.balanceOf(trader, tokenId);
         if (balance == 0) return;
 
         uint256 sharesToSell = (balance * percentBps) / 10000;
         if (sharesToSell == 0) sharesToSell = 1;
 
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
+
         vm.prank(trader);
-        try market.sellShares(bucketId, sharesToSell, 0) {} catch {}
+        try market.sellSharesRange(lower, upper, sharesToSell, 0, address(0)) {} catch {}
     }
 }
 
@@ -120,7 +126,7 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
     /// @notice Sum of user position tokens for a bucket must not exceed bucket shares liability.
     function invariant_userTokenSupplyNeverExceedsBucketShares() public view {
         for (uint256 bucketId = 0; bucketId < market.bucketCount(); bucketId++) {
-            uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | uint256(uint128(bucketId));
+            uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
             uint256 userTokenSum = 0;
 
             for (uint256 i = 0; i < traders.length; i++) {

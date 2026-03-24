@@ -106,7 +106,8 @@ contract VaultTest is Test {
         usdc.mint(trader, amount);
         vm.startPrank(trader);
         usdc.approve(address(m), amount);
-        m.buyShares(bucketId, amount, 0);
+        uint256 lower = m.marketMin() + (bucketId * m.bucketWidth());
+        m.buySharesRange(lower, lower + m.bucketWidth(), amount, 0, 0, address(0));
         vm.stopPrank();
     }
 

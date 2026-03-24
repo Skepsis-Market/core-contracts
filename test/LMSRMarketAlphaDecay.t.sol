@@ -61,9 +61,13 @@ contract LMSRMarketAlphaDecayTest is Test {
         usdc.mint(address(market), poolBalance);
     }
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
     function test_decayDisabledByDefault() public view {
-        assertFalse(market.isAlphaDecayConfigured());
-        assertFalse(market.needsAlphaSync());
+        assertFalse(market.decayDuration() > 0 && market.alphaFinal() < market.alphaInitial());
         assertEq(market.alphaInitial(), market.alpha());
         assertEq(market.alphaFinal(), market.alpha());
     }
@@ -77,7 +81,7 @@ contract LMSRMarketAlphaDecayTest is Test {
         vm.prank(creator);
         market.configureAlphaDecay(finalAlpha, start, duration);
 
-        assertTrue(market.isAlphaDecayConfigured());
+        assertTrue(market.decayDuration() > 0 && market.alphaFinal() < market.alphaInitial());
         assertEq(market.alphaFinal(), finalAlpha);
         assertEq(market.decayStartTime(), start);
         assertEq(market.decayDuration(), duration);
@@ -136,8 +140,9 @@ contract LMSRMarketAlphaDecayTest is Test {
 
         vm.warp(block.timestamp + market.ALPHA_EPOCH_LENGTH() + 1);
 
-        vm.prank(trader);
-        market.buyShares(0, 10_000000, 0);
+        vm.startPrank(trader);
+        _buyBucket(0, 10_000000, 0);
+        vm.stopPrank();
 
         assertLt(market.alpha(), initialAlpha);
     }

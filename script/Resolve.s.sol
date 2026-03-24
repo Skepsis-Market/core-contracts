@@ -60,9 +60,9 @@ contract ResolveScript is Script {
         console.log("\n  Bucket distribution (all buckets):");
         console.log("  idx  lowerBound  upperBound    shares");
         for (uint256 i = 0; i < n; i++) {
-            LMSRMarket.Bucket memory b = market.getBucket(i);
-            console.log("  bucket", i, b.lowerBound, b.upperBound);
-            console.log("    shares:", b.shares);
+            (uint256 bShares, uint256 bLower, uint256 bUpper) = market.buckets(i);
+            console.log("  bucket", i, bLower, bUpper);
+            console.log("    shares:", bShares);
         }
 
         if (RESOLUTION_VALUE == 0) {
@@ -89,12 +89,12 @@ contract ResolveScript is Script {
         uint256 winBucket = (RESOLUTION_VALUE - minVal) / bWidth;
         if (winBucket >= n) winBucket = n - 1;
 
-        LMSRMarket.Bucket memory wb = market.getBucket(winBucket);
+        (uint256 wbShares, uint256 wbLower, uint256 wbUpper) = market.buckets(winBucket);
 
         console.log("\n  Resolution value:", RESOLUTION_VALUE, market.valueUnit());
         console.log("  Winning bucket:  ", winBucket);
-        console.log("  Winning range:   ", wb.lowerBound, "-", wb.upperBound);
-        console.log("  Winning shares:  ", wb.shares, "(payout USDC ~= shares / 1e6)");
+        console.log("  Winning range:   ", wbLower, "-", wbUpper);
+        console.log("  Winning shares:  ", wbShares, "(payout USDC ~= shares / 1e6)");
 
         vm.startBroadcast(pk);
         market.resolveMarket(RESOLUTION_VALUE);

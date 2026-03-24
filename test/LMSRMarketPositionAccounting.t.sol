@@ -59,15 +59,30 @@ contract LMSRMarketPositionAccountingTest is Test {
         usdc.mint(address(market), 1000_000000);
     }
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
+    function _claimBucket(uint256 bucketId) internal returns (uint256) {
+        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
+        return market.claim(tokenId, address(0));
+    }
+
     function test_buyShares_mintsPositionTokens() public {
         usdc.mint(buyer, 100_000000);
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        uint256 shares = market.buyShares(0, 10_000000, 0);
+        uint256 shares = _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
 
-        uint256 tokenId = (uint256(uint128(MARKET_ID)) << 128) | uint256(uint128(0));
+        uint256 tokenId = (uint256(uint128(MARKET_ID)) << 128) | (uint256(uint64(0)) << 64) | uint256(uint64(0));
         assertEq(positionNFT.balanceOf(buyer, tokenId), shares);
     }
 
@@ -76,27 +91,30 @@ contract LMSRMarketPositionAccountingTest is Test {
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        uint256 shares = market.buyShares(0, 10_000000, 0);
+        uint256 shares = _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
 
+        uint256 lower = market.marketMin();
+        uint256 width = market.bucketWidth();
         vm.prank(attacker);
         vm.expectRevert(LMSRMarket.InsufficientBalance.selector);
-        market.sellShares(0, shares, 0);
+        market.sellSharesRange(lower, lower + width, shares, 0, address(0));
     }
 
-    function test_claimWinnings_revertsWithoutWinningTokens() public {
+    function test_claim_revertsWithoutWinningTokens() public {
         usdc.mint(buyer, 100_000000);
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        uint256 shares = market.buyShares(0, 10_000000, 0);
+        _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
 
         vm.prank(creator);
         market.resolveMarket(0);
 
+        uint256 tokenId = (uint256(uint128(MARKET_ID)) << 128) | (uint256(uint64(0)) << 64) | uint256(uint64(0));
         vm.prank(attacker);
         vm.expectRevert(LMSRMarket.InsufficientBalance.selector);
-        market.claimWinnings(0, shares);
+        market.claim(tokenId, address(0));
     }
 }

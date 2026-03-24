@@ -33,9 +33,12 @@ contract AlphaDecayLossHandler is Test {
             usdc.mint(trader, amountUSDC * 3);
         }
 
+        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 upper = lower + market.bucketWidth();
+
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buyShares(bucketId, amountUSDC, 0) {} catch {}
+        try market.buySharesRange(lower, upper, amountUSDC, 0, 0, address(0)) {} catch {}
         vm.stopPrank();
 
         _updateLossObservations();
@@ -59,7 +62,7 @@ contract AlphaDecayLossHandler is Test {
 
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buySharesRange(rangeLower, rangeUpper, amountUSDC, 0, 0) {} catch {}
+        try market.buySharesRange(rangeLower, rangeUpper, amountUSDC, 0, 0, address(0)) {} catch {}
         vm.stopPrank();
 
         _updateLossObservations();
