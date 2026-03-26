@@ -89,6 +89,9 @@ contract MarketFactory is Ownable {
     /// @notice Default max buckets allowed per range trade (0 = no limit)
     uint256 public defaultMaxBucketsPerRange;
 
+    /// @notice Authorized trade router for all markets
+    address public router;
+
     // ─────────────────── Events ──────────────────────────────────────────────
 
     event MarketCreated(
@@ -176,6 +179,16 @@ contract MarketFactory is Ownable {
         vault = Vault(_vault);
     }
 
+    function setRouter(address _router) external onlyOwner {
+        router = _router;
+    }
+
+    /// @notice Update router on an existing market (for upgrades)
+    function updateMarketRouter(address market, address _router) external onlyOwner {
+        if (!isValidMarket[market]) revert InvalidParameters();
+        LMSRMarket(market).setRouter(_router);
+    }
+
     // ─────────────────── Market Creation ─────────────────────────────────────
 
     /// @notice Create a prediction market in one transaction.
@@ -253,8 +266,11 @@ contract MarketFactory is Ownable {
         marketById[marketId] = marketAddress;
         positionNFT.authorizeMarket(marketAddress, marketId);
 
-        // ── 3. Wire vault and fund atomically (all capital from vault) ────────
+        // ── 3. Wire vault, router, and fund atomically ──────────────────────
         market.setLPVault(address(vault));
+        if (router != address(0)) {
+            market.setRouter(router);
+        }
         vault.fundNewMarket(marketAddress, p.seedAmount);
 
         // ── 4. Configure alpha decay atomically if requested ──────────────────

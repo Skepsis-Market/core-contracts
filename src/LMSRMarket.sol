@@ -2,6 +2,8 @@
 pragma solidity 0.8.24;
 
 import {IUSDC} from "./interfaces/IUSDC.sol";
+import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {IPositionNFT} from "./interfaces/IPositionNFT.sol";
 import {FixedPointMath} from "./FixedPointMath.sol";
 import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
@@ -13,6 +15,7 @@ import {Math} from "@openzeppelin/utils/math/Math.sol";
 contract LMSRMarket is ReentrancyGuard {
     using FixedPointMath for uint256;
     using BucketTree for BucketTree.Tree;
+    using SafeERC20 for IERC20;
 
     struct Bucket {
         uint256 shares; // 6 decimals (matches USDC)
@@ -117,8 +120,11 @@ contract LMSRMarket is ReentrancyGuard {
     /// @notice Number of expansion buckets below the original range (bucket ID offset)
     uint256 public initialBucketOffset;                             // Slot 49
 
-    // Slots 50-53 reserved for future use
-    uint256[4] private __reservedForFutureUse;
+    /// @notice Authorized trade router — only address allowed to call buy/sell/claim
+    address public router;                                           // Slot 50
+
+    // Slots 51-53 reserved for future use
+    uint256[3] private __reservedForFutureUse;
 
     /// @notice Cumulative LP fees that stayed in the contract (accounting transparency)
     uint256 public lpFeesAccrued;                                 // Slot 54
@@ -147,37 +153,11 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 resolutionTime
     );
 
-    event WinningsClaimed(
-        uint256 indexed marketId,
-        address indexed claimer,
-        uint256 amount
-    );
-
     event LPWithdrawal(
         uint256 indexed marketId,
         address indexed creator,
         uint256 amount,
         int256 profit
-    );
-
-    /// @notice Emitted when shares are purchased across a range (correlated LMSR)
-    event RangeSharesPurchased(
-        uint256 indexed marketId,
-        address indexed buyer,
-        uint256 startBucket,
-        uint256 endBucket,
-        uint256 shares,
-        uint256 costUSDC
-    );
-
-    /// @notice Emitted when shares are sold from a range position
-    event RangeSharesSold(
-        uint256 indexed marketId,
-        address indexed seller,
-        uint256 startBucket,
-        uint256 endBucket,
-        uint256 shares,
-        uint256 payoutUSDC
     );
 
     event AlphaDecayConfigured(
@@ -420,6 +400,13 @@ contract LMSRMarket is ReentrancyGuard {
         emit LPVaultSet(marketId, _lpVault);
     }
 
+    /// @notice Set the authorized trade router (factory-only, one-time)
+    /// @notice Set or update the authorized trade router (factory-only)
+    function setRouter(address _router) external {
+        if (msg.sender != factory) revert Unauthorized();
+        router = _router;
+    }
+
     /// @notice Emergency pause — blocks all trading, claims, and LP operations
     /// @dev Only callable by the factory contract (controlled by owner/multisig)
     function emergencyPause() external {
@@ -503,7 +490,7 @@ contract LMSRMarket is ReentrancyGuard {
         if (amountUSDC == 0) revert InvalidParameters();
         if (msg.sender != creator && msg.sender != lpVault) revert Unauthorized();
 
-        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
+        IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), amountUSDC);
         poolBalance += amountUSDC;
         totalDeposited += amountUSDC; // track cumulative deposits for accurate profit basis
 
@@ -534,7 +521,7 @@ contract LMSRMarket is ReentrancyGuard {
 
         poolBalance -= withdrawnUSDC;
         totalSurplusWithdrawn += withdrawnUSDC; // reduce net cost basis — this capital already returned
-        usdcToken.transfer(recipient, withdrawnUSDC);
+        IERC20(address(usdcToken)).safeTransfer(recipient, withdrawnUSDC);
 
         emit SurplusWithdrawn(marketId, msg.sender, recipient, withdrawnUSDC);
     }
@@ -549,6 +536,11 @@ contract LMSRMarket is ReentrancyGuard {
         _;
     }
 
+    modifier onlyRouter() {
+        if (router != address(0) && msg.sender != router) revert Unauthorized();
+        _;
+    }
+
     function _calculateCostFunction() internal view returns (uint256) {
         uint256 lnSum = _tree.totalSum().ln();
         return (alpha * lnSum) / WAD;
@@ -560,7 +552,7 @@ contract LMSRMarket is ReentrancyGuard {
 
     function _routeProtocolFee(uint256 protocolFee) internal {
         if (protocolFee > 0 && protocolFeeCollector != address(0)) {
-            usdcToken.transfer(protocolFeeCollector, protocolFee);
+            IERC20(address(usdcToken)).safeTransfer(protocolFeeCollector, protocolFee);
         }
     }
 
@@ -673,7 +665,7 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 minSharesOut,
         uint256 targetShares,
         address recipient
-    ) external nonReentrant onlyActive returns (uint256 shares) {
+    ) external nonReentrant onlyActive onlyRouter returns (uint256 shares) {
         if (recipient == address(0)) recipient = msg.sender;
         _syncAlpha();
         if (amountUSDC == 0) revert InvalidParameters();
@@ -737,14 +729,13 @@ contract LMSRMarket is ReentrancyGuard {
         feesCollectedProtocol += protocolFee;
         totalVolume += amountUSDC;
 
-        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
+        IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), amountUSDC);
         _routeProtocolFee(protocolFee);
 
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).mint(recipient, _tokenIdForRange(startBucket, endBucket), shares);
         }
 
-        emit RangeSharesPurchased(marketId, recipient, startBucket, endBucket, shares, actualCost);
     }
 
     /// @dev Single-bucket buy: direct LMSR cost function (no binary search needed)
@@ -792,14 +783,13 @@ contract LMSRMarket is ReentrancyGuard {
         feesCollectedProtocol += protocolFee;
         totalVolume += amountUSDC;
 
-        usdcToken.transferFrom(msg.sender, address(this), amountUSDC);
+        IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), amountUSDC);
         _routeProtocolFee(protocolFee);
 
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).mint(recipient, _tokenIdForRange(bucketId, bucketId), sharesMinted);
         }
 
-        emit RangeSharesPurchased(marketId, recipient, bucketId, bucketId, sharesMinted, amountUSDC);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -817,7 +807,7 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 sharesToSell,
         uint256 minUsdcOut,
         address recipient
-    ) external nonReentrant onlyActive returns (uint256 payoutUSDC) {
+    ) external nonReentrant onlyActive onlyRouter returns (uint256 payoutUSDC) {
         if (recipient == address(0)) recipient = msg.sender;
         _syncAlpha();
         if (sharesToSell == 0) revert InvalidParameters();
@@ -873,9 +863,8 @@ contract LMSRMarket is ReentrancyGuard {
         }
 
         _routeProtocolFee(protocolFee);
-        usdcToken.transfer(recipient, payoutUSDC);
+        IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
-        emit RangeSharesSold(marketId, msg.sender, startBucket, endBucket, sharesToSell, payoutUSDC);
     }
 
     /// @dev Single-bucket sell: direct LMSR cost function
@@ -923,9 +912,8 @@ contract LMSRMarket is ReentrancyGuard {
         }
 
         _routeProtocolFee(protocolFee);
-        usdcToken.transfer(recipient, payoutUSDC);
+        IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
-        emit RangeSharesSold(marketId, msg.sender, bucketId, bucketId, sharesToSell, payoutUSDC);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -937,7 +925,7 @@ contract LMSRMarket is ReentrancyGuard {
     ///      claims full NFT balance (no partial claims). Works for single and range positions.
     /// @param tokenId The ERC-1155 position token ID (encodes marketId + bucket range)
     /// @return payoutUSDC Amount of USDC received ($1 per share)
-    function claim(uint256 tokenId, address recipient) external nonReentrant returns (uint256 payoutUSDC) {
+    function claim(uint256 tokenId, address recipient) external nonReentrant onlyRouter returns (uint256 payoutUSDC) {
         if (recipient == address(0)) recipient = msg.sender;
         if (status != MarketStatus.RESOLVED) revert MarketNotActive();
 
@@ -965,9 +953,8 @@ contract LMSRMarket is ReentrancyGuard {
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
         }
-        usdcToken.transfer(recipient, payoutUSDC);
+        IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
-        emit WinningsClaimed(marketId, msg.sender, payoutUSDC);
     }
 
     /// @notice Get quote for buying shares across a range
@@ -1257,7 +1244,7 @@ contract LMSRMarket is ReentrancyGuard {
         lpWithdrawn = true;
 
         // Transfer to caller: creator or lpVault (vault recycles capital into next markets)
-        usdcToken.transfer(msg.sender, withdrawAmount);
+        IERC20(address(usdcToken)).safeTransfer(msg.sender, withdrawAmount);
 
         emit LPWithdrawal(marketId, msg.sender, withdrawAmount, profit);
     }
