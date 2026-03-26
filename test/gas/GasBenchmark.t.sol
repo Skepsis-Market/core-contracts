@@ -95,8 +95,6 @@ contract GasBenchmarkTest is Test {
         p.minValue     = minValue;
         p.maxValue     = maxValue;
         p.bucketCount  = bucketCount;
-        p.feeBps       = feeBps;
-        p.protocolFeeBps = protoBps;
     }
 
     function _isqrt(uint256 x) internal pure returns (uint256) {

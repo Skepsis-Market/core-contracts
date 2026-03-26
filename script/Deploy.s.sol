@@ -173,8 +173,6 @@ contract DeployScript is Script {
         p.minValue       = MARKET_MIN;
         p.maxValue       = MARKET_MAX;
         p.bucketCount    = MARKET_BUCKETS;
-        p.feeBps         = DEFAULT_FEE_BPS;
-        p.protocolFeeBps = PROTOCOL_FEE_BPS;
         p.alphaFinal     = (alphaInitial * DECAY_FINAL_BPS) / 10000;
         p.decayDuration  = DECAY_DURATION;
         p.expandedMinValue = EXPANDED_MIN;

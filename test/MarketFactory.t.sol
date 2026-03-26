@@ -92,8 +92,6 @@ contract MarketFactoryTest is Test {
         p.minValue     = minValue;
         p.maxValue     = maxValue;
         p.bucketCount  = bucketCount;
-        p.feeBps       = feeBps;
-        p.protocolFeeBps = protoBps;
     }
 
     function _isqrt(uint256 x) internal pure returns (uint256) {
@@ -221,25 +219,16 @@ contract MarketFactoryTest is Test {
         assertEq(usdc.balanceOf(marketAddress), poolBalance, "Market should receive seed from vault");
     }
 
-    function test_createMarket_setsFeesCorrectly() public {
+    function test_createMarket_usesFactoryDefaultFees() public {
         uint256 poolBalance = 1000_000000;
 
-        usdc.mint(creator1, poolBalance * 2);
-        vm.startPrank(creator1);
-
-        // Default fees (0, 0)
+        usdc.mint(creator1, poolBalance);
+        vm.prank(creator1);
         address market1 = _cm(poolBalance, 0, 100, 2, 0, 0);
 
-        // Custom fees
-        uint256 customFeeBps        = 100;  // 1%
-        uint256 customProtocolFeeBps = 5000; // 50%
-        address market2 = _cm(poolBalance, 0, 100, 2, customFeeBps, customProtocolFeeBps);
-        vm.stopPrank();
-
+        // Both markets always get factory defaults
         assertEq(LMSRMarket(market1).feeBps(), defaultFeeBps, "Should use default fee bps");
         assertEq(LMSRMarket(market1).protocolFeeBps(), defaultProtocolFeeBps, "Should use default protocol fee bps");
-        assertEq(LMSRMarket(market2).feeBps(), customFeeBps, "Should use custom fee bps");
-        assertEq(LMSRMarket(market2).protocolFeeBps(), customProtocolFeeBps, "Should use custom protocol fee bps");
     }
 
     function test_createMarket_incrementsMarketCount() public {
@@ -352,11 +341,11 @@ contract MarketFactoryTest is Test {
 
         assertEq(LMSRMarket(market1).creator(), creator1);
         assertEq(LMSRMarket(market1).poolBalance(), poolBalance);
-        assertEq(LMSRMarket(market1).feeBps(), 50);
+        assertEq(LMSRMarket(market1).feeBps(), defaultFeeBps);
 
         assertEq(LMSRMarket(market2).creator(), creator2);
         assertEq(LMSRMarket(market2).poolBalance(), poolBalance * 2);
-        assertEq(LMSRMarket(market2).feeBps(), 100);
+        assertEq(LMSRMarket(market2).feeBps(), defaultFeeBps);
 
         assertTrue(factory.isValidMarket(market1));
         assertTrue(factory.isValidMarket(market2));

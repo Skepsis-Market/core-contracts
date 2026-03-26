@@ -96,8 +96,7 @@ contract CreateMarketScript is Script {
         p.minValue                = MARKET_MIN;
         p.maxValue                = MARKET_MAX;
         p.bucketCount             = BUCKET_COUNT;
-        p.feeBps                  = FEE_BPS;
-        p.protocolFeeBps          = PROTOCOL_FEE_BPS;
+        // fees come from factory defaults — no per-market override
         p.alphaFinal              = (ALPHA_INITIAL * DECAY_FINAL_BPS) / 10000;
         p.decayDuration           = DECAY_DURATION;
         p.name                    = NAME;

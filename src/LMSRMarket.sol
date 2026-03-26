@@ -426,6 +426,14 @@ contract LMSRMarket is ReentrancyGuard {
         emit MarketEmergencyUnpaused(marketId);
     }
 
+    /// @notice Update fee configuration (factory-only)
+    function setFees(uint256 _feeBps, uint256 _protocolFeeBps) external {
+        if (msg.sender != factory) revert Unauthorized();
+        if (_feeBps > MAX_FEE_BPS) revert InvalidParameters();
+        feeBps = _feeBps;
+        protocolFeeBps = _protocolFeeBps;
+    }
+
     /// @notice Set max range width (factory-only, called post-initialize)
     /// @param _maxRangeWidth Max buckets per range trade (0 = no limit)
     function setMaxRangeWidth(uint256 _maxRangeWidth) external {

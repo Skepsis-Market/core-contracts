@@ -23,8 +23,6 @@ contract MarketFactory is Ownable {
         uint256 minValue;          // Minimum value in market range (Sui parity)
         uint256 maxValue;          // Maximum value in market range (Sui parity)
         uint256 bucketCount;       // Number of buckets (Sui parity)
-        uint256 feeBps;            // Trading fee bps (0 = factory default)
-        uint256 protocolFeeBps;    // Protocol fee share bps (0 = factory default)
         // Alpha decay — all zero means no decay (fixed alpha)
         uint256 alphaFinal;        // Decay floor (6 decimals). 0 = no decay
         uint256 decayStart;        // Unix timestamp when decay begins. 0 = block.timestamp
@@ -218,10 +216,9 @@ contract MarketFactory is Ownable {
         // Ensure even bucket widths
         if ((p.maxValue - p.minValue) % p.bucketCount != 0) revert InvalidBucketRanges();
 
-        uint256 actualFeeBps = p.feeBps == 0 ? defaultFeeBps : p.feeBps;
-        uint256 actualProtocolFeeBps = p.protocolFeeBps == 0 ? defaultProtocolFeeBps : p.protocolFeeBps;
-        if (actualFeeBps > 500) revert InvalidParameters();
-        if (actualProtocolFeeBps > 10000) revert InvalidParameters();
+        // Fees come from factory defaults — no per-market override
+        uint256 actualFeeBps = defaultFeeBps;
+        uint256 actualProtocolFeeBps = defaultProtocolFeeBps;
 
         uint256 marketId = marketCount++;
 
@@ -351,6 +348,20 @@ contract MarketFactory is Ownable {
         uint256 oldValue = defaultMaxBucketsPerRange;
         defaultMaxBucketsPerRange = newMaxBucketsPerRange;
         emit DefaultMaxBucketsPerRangeUpdated(oldValue, newMaxBucketsPerRange);
+    }
+
+    /// @notice Push current default fees to a specific market
+    function updateMarketFees(address market) external onlyOwner {
+        if (!isValidMarket[market]) revert InvalidParameters();
+        LMSRMarket(market).setFees(defaultFeeBps, defaultProtocolFeeBps);
+    }
+
+    /// @notice Push current default fees to multiple markets at once
+    function updateMarketFeesBatch(address[] calldata markets) external onlyOwner {
+        for (uint256 i = 0; i < markets.length; i++) {
+            if (!isValidMarket[markets[i]]) revert InvalidParameters();
+            LMSRMarket(markets[i]).setFees(defaultFeeBps, defaultProtocolFeeBps);
+        }
     }
 
     /// @notice Emergency pause a market — blocks all trading and claims
