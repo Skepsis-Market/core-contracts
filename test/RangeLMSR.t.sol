@@ -53,6 +53,7 @@ contract RangeLMSRTest is Test {
             1_000_000000,   // alpha = POOL / sqrt(100)
             POOL,           // poolBalance
             ranges,         // bucket ranges
+            new uint256[](0), // initialShares
             50,             // feeBps (0.5%)
             2000,           // protocolFeeBps (20% of fees)
             _defaultMetadata(),
@@ -131,10 +132,10 @@ contract RangeLMSRTest is Test {
     
     function test_buySharesRange_affectsAllBucketsInRange() public {
         // Get bucket shares before
-        (uint256 sharesBucket45Before,,) = market.buckets(45);
-        (uint256 sharesBucket46Before,,) = market.buckets(46);
-        (uint256 sharesBucket47Before,,) = market.buckets(47);
-        (uint256 sharesBucket44Before,,) = market.buckets(44); // Outside range
+        (uint256 sharesBucket45Before,,,) = market.buckets(45);
+        (uint256 sharesBucket46Before,,,) = market.buckets(46);
+        (uint256 sharesBucket47Before,,,) = market.buckets(47);
+        (uint256 sharesBucket44Before,,,) = market.buckets(44); // Outside range
         
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
@@ -142,10 +143,10 @@ contract RangeLMSRTest is Test {
         vm.stopPrank();
         
         // Get bucket shares after
-        (uint256 sharesBucket45After,,) = market.buckets(45);
-        (uint256 sharesBucket46After,,) = market.buckets(46);
-        (uint256 sharesBucket47After,,) = market.buckets(47);
-        (uint256 sharesBucket44After,,) = market.buckets(44);
+        (uint256 sharesBucket45After,,,) = market.buckets(45);
+        (uint256 sharesBucket46After,,,) = market.buckets(46);
+        (uint256 sharesBucket47After,,,) = market.buckets(47);
+        (uint256 sharesBucket44After,,,) = market.buckets(44);
         
         console.log("=== Bucket Share Changes ===");
         console.log("Bucket 44 (outside): before=", sharesBucket44Before, "after=", sharesBucket44After);
@@ -180,13 +181,13 @@ contract RangeLMSRTest is Test {
         
         LMSRMarket marketRange = new LMSRMarket(
             2, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata(), address(0xFEE)
+            1_000_000000, POOL, ranges, new uint256[](0), 50, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.transfer(address(marketRange), POOL);
         
         LMSRMarket marketSingle = new LMSRMarket(
             3, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, 50, 2000, _defaultMetadata(), address(0xFEE)
+            1_000_000000, POOL, ranges, new uint256[](0), 50, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.transfer(address(marketSingle), POOL);
         vm.stopPrank();
@@ -295,18 +296,18 @@ contract RangeLMSRTest is Test {
         uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         
         // Get bucket shares before sell
-        (uint256 sharesBucket45Before,,) = market.buckets(45);
-        (uint256 sharesBucket46Before,,) = market.buckets(46);
-        (uint256 sharesBucket47Before,,) = market.buckets(47);
+        (uint256 sharesBucket45Before,,,) = market.buckets(45);
+        (uint256 sharesBucket46Before,,,) = market.buckets(46);
+        (uint256 sharesBucket47Before,,,) = market.buckets(47);
         
         // Sell
         market.sellSharesRange(114500, 114800, shares, 0, address(0));
         vm.stopPrank();
         
         // Get bucket shares after sell
-        (uint256 sharesBucket45After,,) = market.buckets(45);
-        (uint256 sharesBucket46After,,) = market.buckets(46);
-        (uint256 sharesBucket47After,,) = market.buckets(47);
+        (uint256 sharesBucket45After,,,) = market.buckets(45);
+        (uint256 sharesBucket46After,,,) = market.buckets(46);
+        (uint256 sharesBucket47After,,,) = market.buckets(47);
         
         // All buckets should decrease by same amount
         uint256 delta45 = sharesBucket45Before - sharesBucket45After;

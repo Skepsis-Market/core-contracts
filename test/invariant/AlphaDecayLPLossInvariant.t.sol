@@ -92,7 +92,7 @@ contract AlphaDecayLossHandler is Test {
     function _maxLiabilityBucket() internal view returns (uint256 winner) {
         uint256 maxShares = 0;
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
                 winner = i;
@@ -120,7 +120,7 @@ contract AlphaDecayLossHandler is Test {
 
     function _maxLiability() internal view returns (uint256 maxShares) {
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }
@@ -170,6 +170,7 @@ contract AlphaDecayLPLossInvariantTest is StdInvariant, Test {
             3_333_333333,
             INITIAL_LIQUIDITY,
             bucketRanges,
+            new uint256[](0),
             0,
             0,
             _defaultMetadata(),
@@ -244,7 +245,7 @@ contract AlphaDecayLPLossInvariantTest is StdInvariant, Test {
 
     function _maxLiability() internal view returns (uint256 maxShares) {
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }

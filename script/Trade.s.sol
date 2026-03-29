@@ -69,7 +69,7 @@ contract BuyScript is Script {
         uint256 mid     = market.marketId();
         uint256 tokenId = tokenIdForBucket(mid, BUCKET_ID);
 
-        (uint256 bShares, uint256 bLower, uint256 bUpper) = market.buckets(BUCKET_ID);
+        (uint256 bShares,, uint256 bLower, uint256 bUpper) = market.buckets(BUCKET_ID);
 
         console.log("=================================================");
         console.log("  Buy Shares");
@@ -141,7 +141,7 @@ contract SellScript is Script {
         uint256 tokenId = tokenIdForBucket(mid, BUCKET_ID);
         uint256 nftBal  = nft.balanceOf(trader, tokenId);
 
-        (uint256 bShares, uint256 bLower, uint256 bUpper) = market.buckets(BUCKET_ID);
+        (uint256 bShares,, uint256 bLower, uint256 bUpper) = market.buckets(BUCKET_ID);
 
         console.log("=================================================");
         console.log("  Sell Shares");

@@ -80,7 +80,7 @@ contract VaultTest is Test {
         uint256 _alpha = seed / _isqrt(numBuckets);
         m = new LMSRMarket(
             id, creator, address(0xFACE), address(usdc), address(0),
-            _alpha, seed, ranges, 100, 2000, _defaultMetadata(), address(0xFEE)
+            _alpha, seed, ranges, new uint256[](0), 100, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.mint(address(m), seed);
     }
@@ -470,8 +470,11 @@ contract VaultTest is Test {
         vault.harvestResolved(address(market1));
 
         // After harvest: market cache zeroed, vault liquid increased by LP residual
-        // totalAssets should be roughly the same (capital moved back to vault)
-        assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest, 2, "totalAssets approx unchanged after harvest");
+        // With new accounting, LP recovers initial shares from winning bucket,
+        // so harvested amount exceeds the cached value by initialShares of winning bucket.
+        // totalAssets increases by that initialShares amount.
+        (, uint256 winInitShares,,) = market1.buckets(market1.winningBucket());
+        assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest + winInitShares, 2, "totalAssets increases by recovered initial shares after harvest");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

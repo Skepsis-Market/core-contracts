@@ -52,6 +52,7 @@ contract LMSRMarketAlphaDecayTest is Test {
             alphaParam,
             poolBalance,
             bucketRanges,
+            new uint256[](0),
             feeBps,
             protocolFeeBps,
             _defaultMetadata(),

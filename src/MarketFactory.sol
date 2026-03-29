@@ -23,6 +23,7 @@ contract MarketFactory is Ownable {
         uint256 minValue;          // Minimum value in market range (Sui parity)
         uint256 maxValue;          // Maximum value in market range (Sui parity)
         uint256 bucketCount;       // Number of buckets (Sui parity)
+        uint256[] initialShares;   // Custom distribution (empty = uniform). Must sum to seedAmount.
         // Alpha decay — all zero means no decay (fixed alpha)
         uint256 alphaFinal;        // Decay floor (6 decimals). 0 = no decay
         uint256 decayStart;        // Unix timestamp when decay begins. 0 = block.timestamp
@@ -252,6 +253,7 @@ contract MarketFactory is Ownable {
             p.alpha,           // creator-specified alpha (6 decimals)
             p.seedAmount,
             bucketRanges,      // computed from minValue, maxValue, bucketCount
+            p.initialShares,   // custom distribution (empty = uniform)
             actualFeeBps,
             actualProtocolFeeBps,
             metadata,

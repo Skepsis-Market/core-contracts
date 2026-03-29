@@ -49,6 +49,7 @@ contract LMSRMarketPositionAccountingTest is Test {
             500_000000,
             1000_000000,
             bucketRanges,
+            new uint256[](0),
             50,
             2000,
             _defaultMetadata(),

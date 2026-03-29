@@ -79,7 +79,7 @@ contract SolvencyHandler is Test {
         sharePercent = bound(sharePercent, 1, 100);
 
         // Get bucket shares
-        (uint256 bucketShares,,) = market.buckets(bucketId);
+        (uint256 bucketShares,,,) = market.buckets(bucketId);
         if (bucketShares == 0) return; // Nothing to sell
 
         // Calculate shares to sell (percentage of bucket shares)
@@ -113,7 +113,7 @@ contract SolvencyHandler is Test {
         
         // Check max shares across all buckets
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             uint256 sharesUSDC = shares.fromWad();
             if (sharesUSDC > maxSharesEverSeen) {
                 maxSharesEverSeen = sharesUSDC;
@@ -175,6 +175,7 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             3_333_333333, // alpha = POOL / sqrt(10)
             POOL_BALANCE,
             bucketRanges,
+            new uint256[](0),
             50, // 0.5% fee
             2000, // 20% protocol fee
             _defaultMetadata(),
@@ -208,7 +209,7 @@ contract SolvencyInvariantTest is StdInvariant, Test {
         uint256 bucketCount = market.bucketCount();
         
         for (uint256 i = 0; i < bucketCount; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             uint256 sharesUSDC = shares.fromWad();
             
             // CRITICAL INVARIANT: Max payout cannot exceed available funds
@@ -241,7 +242,7 @@ contract SolvencyInvariantTest is StdInvariant, Test {
         uint256 bucketCount = market.bucketCount();
         
         for (uint256 i = 0; i < bucketCount; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             totalSharesUSDC += shares.fromWad();
         }
         

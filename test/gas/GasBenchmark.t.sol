@@ -36,7 +36,7 @@ contract GasBenchmarkTest is Test {
             LMSRMarket.MarketMetadata memory implMeta;
             address lmsrImpl = address(new LMSRMarket(
                 0, address(0), address(0), address(usdc), address(0),
-                1, 1, implRanges, 0, 0, implMeta, address(0xFEE)
+                1, 1, implRanges, new uint256[](0), 0, 0, implMeta, address(0xFEE)
             ));
 
             // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
@@ -316,7 +316,7 @@ contract GasBenchmarkTest is Test {
         _buyBucket(market, 5, 100_000000, 0);
         vm.stopPrank();
 
-        (uint256 shares,,) = market.buckets(5);
+        (uint256 shares,,,) = market.buckets(5);
         market.calculateReturnForShares(5, shares / 2);
     }
     

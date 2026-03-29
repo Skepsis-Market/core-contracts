@@ -73,7 +73,7 @@ contract ClaimScript is Script {
         // If SHARES_TO_CLAIM == 0 claim everything the caller holds
         uint256 sharesToClaim = (SHARES_TO_CLAIM == 0) ? nftBal : SHARES_TO_CLAIM;
 
-        (uint256 wbShares, uint256 wbLower, uint256 wbUpper) = market.buckets(winBucket);
+        (uint256 wbShares,, uint256 wbLower, uint256 wbUpper) = market.buckets(winBucket);
 
         console.log("=================================================");
         console.log("  Claim Winnings");
@@ -108,7 +108,7 @@ contract ClaimScript is Script {
         console.log("  USDC after:     ", usdc.balanceOf(claimer) / 1e6, "USDC");
         console.log("  NFT bal after:  ", nft.balanceOf(claimer, tokenId));
         console.log("  Pool remaining: ", market.poolBalance() / 1e6, "USDC");
-        (uint256 remainingShares,,) = market.buckets(winBucket);
+        (uint256 remainingShares,,,) = market.buckets(winBucket);
         console.log("\n  Unclaimed winning shares:", remainingShares);
         console.log("  (Other winners must claim before LP capital can be fully harvested)");
     }
@@ -148,7 +148,7 @@ contract HarvestLPScript is Script {
         );
 
         uint256 winBucket    = market.winningBucket();
-        (uint256 winShares,,) = market.buckets(winBucket);
+        (uint256 winShares,,,) = market.buckets(winBucket);
         uint256 pool         = market.poolBalance();
         uint256 approxForLP  = pool > winShares ? pool - winShares : 0;
 

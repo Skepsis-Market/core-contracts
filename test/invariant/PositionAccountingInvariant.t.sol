@@ -100,6 +100,7 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
             5_000_000000,
             10000_000000,
             bucketRanges,
+            new uint256[](0),
             50,
             2000,
             _defaultMetadata(),
@@ -133,7 +134,7 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
                 userTokenSum += positionNFT.balanceOf(traders[i], tokenId);
             }
 
-            (uint256 bucketShares,,) = market.buckets(bucketId);
+            (uint256 bucketShares,,,) = market.buckets(bucketId);
             assertLe(userTokenSum, bucketShares, "User token balances exceed bucket shares");
         }
     }

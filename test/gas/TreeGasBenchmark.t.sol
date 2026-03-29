@@ -35,7 +35,7 @@ contract TreeGasBenchmarkTest is Test {
         vm.prank(creator);
         LMSRMarket market = new LMSRMarket(
             1, creator, address(this), address(usdc), address(0),
-            ALPHA, POOL, ranges, 50, 2000, meta, address(0xFEE)
+            ALPHA, POOL, ranges, new uint256[](0), 50, 2000, meta, address(0xFEE)
         );
 
         // Fund trader
@@ -82,7 +82,7 @@ contract TreeGasBenchmarkTest is Test {
         _buyBucket(market, 5, 500_000000, 0);
         vm.stopPrank();
         // Sell
-        (uint256 bShares,,) = market.buckets(5);
+        (uint256 bShares,,,) = market.buckets(5);
         uint256 shares = bShares > POOL / 19 ? (bShares - POOL / 19) / 2 : 1;
         uint256 lower = market.marketMin() + (5 * market.bucketWidth());
         uint256 upper = lower + market.bucketWidth();

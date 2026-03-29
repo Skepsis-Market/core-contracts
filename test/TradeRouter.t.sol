@@ -44,7 +44,7 @@ contract TradeRouterTest is Test {
 
         market = new LMSRMarket(
             marketId, creator, factory, address(usdc), address(posNFT),
-            500_000000, poolBalance, ranges, 50, 2000,
+            500_000000, poolBalance, ranges, new uint256[](0), 50, 2000,
             LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
             address(0xFEE)
         );

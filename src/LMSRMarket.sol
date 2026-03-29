@@ -18,7 +18,8 @@ contract LMSRMarket is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     struct Bucket {
-        uint256 shares; // 6 decimals (matches USDC)
+        uint256 shares;        // 6 decimals (matches USDC) — current total shares
+        uint256 initialShares; // 6 decimals — LP's initial allocation (immutable after creation)
         uint256 lowerBound;
         uint256 upperBound;
     }
@@ -222,15 +223,15 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 _alpha,
         uint256 _poolBalance,
         uint256[] memory _bucketRanges,
+        uint256[] memory _initialShares,
         uint256 _feeBps,
         uint256 _protocolFeeBps,
         MarketMetadata memory _metadata,
         address _protocolFeeCollector
     ) {
-        // Forward to initialize(). Supports both direct deployment and EIP-1167 clone pattern.
         initialize(
             _marketId, _creator, _factory, _usdcToken, _positionNFT,
-            _alpha, _poolBalance, _bucketRanges, _feeBps, _protocolFeeBps, _metadata,
+            _alpha, _poolBalance, _bucketRanges, _initialShares, _feeBps, _protocolFeeBps, _metadata,
             _protocolFeeCollector
         );
     }
@@ -247,6 +248,7 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 _alpha,
         uint256 _poolBalance,
         uint256[] memory _bucketRanges,
+        uint256[] memory _initialShares,
         uint256 _feeBps,
         uint256 _protocolFeeBps,
         MarketMetadata memory _metadata,
@@ -301,27 +303,55 @@ contract LMSRMarket is ReentrancyGuard {
         // Cache ln(n) for cost function calculations (not for alpha anymore)
         cachedLnBucketCount = bucketCount.fromU256().ln(); // Returns WAD (18 decimals)
 
-        // Initialize with uniform distribution: poolBalance / bucketCount per bucket
-        uint256 initialShares = poolBalance / bucketCount; // 6 decimals
+        // Initialize distribution: custom shares array or uniform fallback
+        bool customDist = _initialShares.length > 0;
+        if (customDist && _initialShares.length != bucketCount) revert InvalidParameters();
 
-        for (uint256 i = 0; i < bucketCount; i++) {
-            buckets[i] = Bucket({
-                shares: initialShares,
-                lowerBound: _bucketRanges[i],
-                upperBound: _bucketRanges[i + 1]
-            });
+        if (customDist) {
+            // Custom prior — validate sum == poolBalance, compute per-bucket tree values
+            uint256 maxShares = 0;
+            uint256 totalShares = 0;
+            uint256[] memory treeValues = new uint256[](bucketCount);
+
+            for (uint256 i = 0; i < bucketCount; i++) {
+                uint256 shares = _initialShares[i];
+                if (shares == 0) revert InvalidParameters(); // every bucket needs weight
+                buckets[i] = Bucket({
+                    shares: shares,
+                    initialShares: shares,
+                    lowerBound: _bucketRanges[i],
+                    upperBound: _bucketRanges[i + 1]
+                });
+                treeValues[i] = (((shares + PHANTOM_SHARES) * WAD) / alpha).exp();
+                totalShares += shares;
+                if (shares > maxShares) maxShares = shares;
+            }
+
+            if (totalShares != poolBalance) revert InvalidParameters();
+            // Init tree first (rebuildWithSize requires prior init), then rebuild with custom values
+            _tree.init(uint32(bucketCount), WAD);
+            _tree.rebuildWithSize(uint32(bucketCount), treeValues);
+            maxLiability = maxShares;
+        } else {
+            // Uniform distribution — cheaper: single exp value for all buckets
+            uint256 initialShares = poolBalance / bucketCount;
+            for (uint256 i = 0; i < bucketCount; i++) {
+                buckets[i] = Bucket({
+                    shares: initialShares,
+                    initialShares: initialShares,
+                    lowerBound: _bucketRanges[i],
+                    upperBound: _bucketRanges[i + 1]
+                });
+            }
+            uint256 initExp = (((initialShares + PHANTOM_SHARES) * WAD) / alpha).exp();
+            _tree.init(uint32(bucketCount), initExp);
+            maxLiability = initialShares;
         }
 
-        // Initialize segment tree with uniform exp weights
-        uint256 initRatio = ((initialShares + PHANTOM_SHARES) * WAD) / alpha;
-        _tree.init(uint32(bucketCount), initRatio.exp());
-
-        // Solvency check: max shares per bucket <= poolBalance
-        if (initialShares > poolBalance + SOLVENCY_DUST) {
+        // Solvency check
+        if (maxLiability > poolBalance + SOLVENCY_DUST) {
             revert SolvencyViolation();
         }
-
-        maxLiability = initialShares;
 
         emit MarketCreated(_marketId, _creator, _poolBalance, alpha, bucketCount);
     }
@@ -785,7 +815,7 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
 
-        poolBalance += netCostUSDC;
+        poolBalance += netCostUSDC + lpFee;
         feesCollectedLP += lpFee;
         lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
@@ -1231,12 +1261,17 @@ contract LMSRMarket is ReentrancyGuard {
         if (status != MarketStatus.RESOLVED) revert MarketNotActive();
         if (lpWithdrawn) revert InvalidParameters();
 
-        // Calculate total outstanding winning shares
-        uint256 totalWinningShares = buckets[winningBucket].shares; // 6 decimals
-        uint256 totalPayoutsRequired = totalWinningShares; // 6 decimals = 6 decimals
+        // LP's initial shares in winning bucket — nobody holds NFTs for these
+        uint256 lpInitialShares = buckets[winningBucket].initialShares;
 
-        // Available for LP = current pool - unclaimed winnings
-        uint256 availableForLP = poolBalance - totalPayoutsRequired;
+        // Only trader-held shares need to be reserved for claims
+        uint256 totalWinningShares = buckets[winningBucket].shares;
+        uint256 traderPayoutsRequired = totalWinningShares > lpInitialShares
+            ? totalWinningShares - lpInitialShares
+            : 0;
+
+        // Available for LP = pool - trader claims (LP recovers their initial shares)
+        uint256 availableForLP = poolBalance - traderPayoutsRequired;
 
         // Net cost basis: what was deposited minus what was already returned via surplus withdrawals
         uint256 netDeposit = totalDeposited > totalSurplusWithdrawn
@@ -1248,7 +1283,7 @@ contract LMSRMarket is ReentrancyGuard {
 
         // Reset pool balance to prevent re-withdrawal
         uint256 withdrawAmount = availableForLP;
-        poolBalance = totalPayoutsRequired; // Leave exactly enough for remaining claims
+        poolBalance = traderPayoutsRequired; // Leave exactly enough for trader claims
         lpWithdrawn = true;
 
         // Transfer to caller: creator or lpVault (vault recycles capital into next markets)
@@ -1271,10 +1306,12 @@ contract LMSRMarket is ReentrancyGuard {
             // Pre-resolution: pool minus what's still owed as net deposit
             unrealizedProfit = int256(poolBalance) - int256(netDeposit);
         } else {
-            // Post-resolution: subtract winning share payouts still outstanding
-            uint256 totalWinningShares = buckets[winningBucket].shares;
-            uint256 availableForLP = poolBalance > totalWinningShares
-                ? poolBalance - totalWinningShares
+            // Post-resolution: only trader shares are owed, LP recovers initial shares
+            uint256 lpInitShares = buckets[winningBucket].initialShares;
+            uint256 totalWinShares = buckets[winningBucket].shares;
+            uint256 traderOwed = totalWinShares > lpInitShares ? totalWinShares - lpInitShares : 0;
+            uint256 availableForLP = poolBalance > traderOwed
+                ? poolBalance - traderOwed
                 : 0;
             unrealizedProfit = int256(availableForLP) - int256(netDeposit);
         }
@@ -1300,6 +1337,7 @@ contract LMSRMarket is ReentrancyGuard {
 
         buckets[bucketId] = Bucket({
             shares: 0,
+            initialShares: 0,
             lowerBound: lower,
             upperBound: upper
         });

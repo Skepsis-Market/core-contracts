@@ -66,6 +66,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
             10_000_000000,
             INITIAL_LIQUIDITY,
             ranges,
+            new uint256[](0),
             0, // feeBps = 0 for pure math benchmark
             0,  // protocolFeeBps = 0
             _defaultMetadata(),
@@ -181,7 +182,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
     // ─────────────────────────────────────────────────────────────────────────────
 
     function _spotProbability(uint256 bucketId) internal view returns (uint256) {
-        (uint256 shares,,) = market.buckets(bucketId);
+        (uint256 shares,,,) = market.buckets(bucketId);
         uint256 ratio = ((shares + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
         uint256 bucketExp = ratio.exp();
         uint256 sumExp = _computeSumExp();
@@ -191,7 +192,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
     function _computeSumExp() internal view returns (uint256 sumExp) {
         uint256 n = market.bucketCount();
         for (uint256 i = 0; i < n; i++) {
-            (uint256 s,,) = market.buckets(i);
+            (uint256 s,,,) = market.buckets(i);
             uint256 r = ((s + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
             sumExp += r.exp();
         }
@@ -249,7 +250,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
         uint256 maxShares = 0;
         uint256 buckets = market.bucketCount();
         for (uint256 i = 0; i < buckets; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }
@@ -261,7 +262,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
     function _logTableRow(uint256 step, uint256 cumulativeSpend, uint256 sharesMinted, string memory txLabel) internal view {
         uint256 p1 = _spotProbability(1);
         uint256 costOne = _costForOneShare(1);
-        (uint256 bucket1Shares,,) = market.buckets(1);
+        (uint256 bucket1Shares,,,) = market.buckets(1);
 
         string memory line = string.concat(
             vm.toString(step), ",",

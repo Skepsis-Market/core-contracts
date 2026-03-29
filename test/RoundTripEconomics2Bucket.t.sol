@@ -60,6 +60,7 @@ contract RoundTripEconomics2BucketTest is Test {
             10_000_000000,
             INITIAL_LIQUIDITY,
             ranges,
+            new uint256[](0),
             FEE_BPS,
             PROTOCOL_FEE_BPS,
             _defaultMetadata(),
@@ -113,7 +114,7 @@ contract RoundTripEconomics2BucketTest is Test {
     }
 
     function _snapshot(uint256 bucketId) internal view returns (Snapshot memory snap) {
-        (uint256 bucketShares,,) = market.buckets(bucketId);
+        (uint256 bucketShares,,,) = market.buckets(bucketId);
 
         snap = Snapshot({
             userUsdc: usdc.balanceOf(TRADER),

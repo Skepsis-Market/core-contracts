@@ -39,7 +39,7 @@ contract MarketLifecycleTest is Test {
             LMSRMarket.MarketMetadata memory implMeta;
             address lmsrImpl = address(new LMSRMarket(
                 0, address(0), address(0), address(usdc), address(0),
-                1, 1, implRanges, 0, 0, implMeta, address(0xFEE)
+                1, 1, implRanges, new uint256[](0), 0, 0, implMeta, address(0xFEE)
             ));
 
             // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
@@ -182,8 +182,11 @@ contract MarketLifecycleTest is Test {
         assertGt(charlieShares, 0, "Charlie should receive shares");
         
         // Verify pool balance increased from trading
+        // Pool now receives netCost + lpFee = costUSDC - protocolFee
+        // Fee = 0.5% (50 bps), protocolFee = 20% of fee = 0.1% (10 bps of trade)
+        // So pool increase per trade = trade * 9990 / 10000
         uint256 poolAfterTrades = market.poolBalance();
-        uint256 expectedIncrease = (TRADE_AMOUNT * 3) * 995 / 1000; // Net after 0.5% fee
+        uint256 expectedIncrease = (TRADE_AMOUNT * 3) * 9990 / 10000;
         assertApproxEqAbs(poolAfterTrades, POOL_BALANCE + expectedIncrease, 10, "Pool should grow");
         
         // === PHASE 3: Resolution ===
@@ -197,7 +200,7 @@ contract MarketLifecycleTest is Test {
         // === PHASE 4: Claims ===
         
         // Alice claims her winnings (she won!)
-        (uint256 bucket7Shares,,) = market.buckets(7);
+        (uint256 bucket7Shares,,,) = market.buckets(7);
         uint256 aliceBalanceBefore = usdc.balanceOf(alice);
 
         vm.startPrank(alice);
@@ -247,11 +250,15 @@ contract MarketLifecycleTest is Test {
         // Verify protocol fees were collected
         assertGt(market.feesCollectedProtocol(), 0, "Protocol should collect fees");
         
-        // Verify final state: pool has exactly enough for remaining claims
-        // Shares are now in 6 decimals, payout = shares (both 6 decimals)
-        uint256 remainingWinningShares = bucket7Shares - aliceShares;
-        uint256 expectedPoolBalance = remainingWinningShares; // Direct conversion (both 6 decimals)
-        assertApproxEqAbs(market.poolBalance(), expectedPoolBalance, 10, "Pool should have exact amount for remaining claims");
+        // Verify final state: pool has exactly enough for remaining trader claims
+        // After Alice claimed, remaining shares = bucket7Shares - aliceShares = initialShares
+        // With new accounting, traderOwed = max(0, remainingShares - initialShares) = 0
+        // So poolBalance should be 0 (all remaining shares are LP's initial allocation)
+        (uint256 bucket7SharesAfterClaim, uint256 bucket7InitShares,,) = market.buckets(7);
+        uint256 remainingTraderClaims = bucket7SharesAfterClaim > bucket7InitShares
+            ? bucket7SharesAfterClaim - bucket7InitShares
+            : 0;
+        assertApproxEqAbs(market.poolBalance(), remainingTraderClaims, 10, "Pool should have exact amount for remaining trader claims");
     }
     
     /// @notice Test LP profit scenario with high trading volume

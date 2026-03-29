@@ -40,7 +40,7 @@ contract ExpansionTest is Test {
         vm.prank(creator);
         LMSRMarket m = new LMSRMarket(
             1, creator, factory, address(usdc), address(0),
-            ALPHA, POOL, ranges, 50, 2000, _defaultMetadata(), address(0xFEE)
+            ALPHA, POOL, ranges, new uint256[](0), 50, 2000, _defaultMetadata(), address(0xFEE)
         );
 
         // Fund market with initial pool (simulates vault.fundNewMarket)
@@ -99,7 +99,7 @@ contract ExpansionTest is Test {
     function test_configureExpansion_bucketRemapping() public {
         market = _createMarket();
         // Original bucket 0: [100K, 101K]
-        (uint256 origShares0, uint256 origLower0, uint256 origUpper0) = market.buckets(0);
+        (uint256 origShares0,, uint256 origLower0, uint256 origUpper0) = market.buckets(0);
         assertEq(origLower0, 100_000);
         assertEq(origUpper0, 101_000);
 
@@ -107,13 +107,13 @@ contract ExpansionTest is Test {
         market.configureExpansion(95_000, 115_000);
 
         // Original bucket 0 is now at index 5
-        (uint256 remappedShares, uint256 remappedLower, uint256 remappedUpper) = market.buckets(5);
+        (uint256 remappedShares,, uint256 remappedLower, uint256 remappedUpper) = market.buckets(5);
         assertEq(remappedLower, 100_000);
         assertEq(remappedUpper, 101_000);
         assertEq(remappedShares, origShares0);
 
         // New bucket 0 is inactive (below original range)
-        (uint256 inactiveShares, uint256 inactiveLower, uint256 inactiveUpper) = market.buckets(0);
+        (uint256 inactiveShares,, uint256 inactiveLower, uint256 inactiveUpper) = market.buckets(0);
         assertEq(inactiveLower, 0);
         assertEq(inactiveUpper, 0);
         assertEq(inactiveShares, 0);
@@ -180,15 +180,15 @@ contract ExpansionTest is Test {
         market.configureExpansion(95_000, 115_000);
 
         // Buckets 0-4: inactive (below original range)
-        (,, uint256 bUpper0) = market.buckets(0);
+        (,,, uint256 bUpper0) = market.buckets(0);
         assertEq(bUpper0, 0); // inactive
 
         // Bucket 5: active (first original bucket, remapped)
-        (, uint256 bLower5, uint256 bUpper5) = market.buckets(5);
+        (,, uint256 bLower5, uint256 bUpper5) = market.buckets(5);
         assertTrue(bUpper5 > bLower5); // active
 
         // Buckets 15-19: inactive (above original range)
-        (,, uint256 bUpper15) = market.buckets(15);
+        (,,, uint256 bUpper15) = market.buckets(15);
         assertEq(bUpper15, 0); // inactive
     }
 
@@ -209,7 +209,7 @@ contract ExpansionTest is Test {
         vm.stopPrank();
 
         // Bucket 0 should now be active
-        (uint256 bShares0, uint256 bLower0, uint256 bUpper0) = market.buckets(0);
+        (uint256 bShares0,, uint256 bLower0, uint256 bUpper0) = market.buckets(0);
         assertTrue(bUpper0 > bLower0);
         assertEq(bLower0, 95_000);
         assertEq(bUpper0, 96_000);
@@ -227,7 +227,7 @@ contract ExpansionTest is Test {
 
         // All 4 buckets should be active
         for (uint256 i = 3; i <= 6; i++) {
-            (, uint256 bLower, uint256 bUpper) = market.buckets(i);
+            (,, uint256 bLower, uint256 bUpper) = market.buckets(i);
             assertTrue(bUpper > bLower);
         }
         assertEq(market.activeBucketCount(), 12); // 10 + 2 newly activated
@@ -238,7 +238,7 @@ contract ExpansionTest is Test {
         market.configureExpansion(95_000, 115_000);
 
         // Get bucket 0 shares before activation
-        (uint256 sharesBucket0Before,,) = market.buckets(0);
+        (uint256 sharesBucket0Before,,,) = market.buckets(0);
         assertEq(sharesBucket0Before, 0); // inactive
 
         // Activate bucket 0
@@ -247,7 +247,7 @@ contract ExpansionTest is Test {
         vm.stopPrank();
 
         // After activation, bucket 0 should have shares
-        (uint256 sharesBucket0After,,) = market.buckets(0);
+        (uint256 sharesBucket0After,,,) = market.buckets(0);
         assertTrue(sharesBucket0After > 0, "Activated bucket should have shares");
     }
 
@@ -313,7 +313,7 @@ contract ExpansionTest is Test {
         market.buySharesRange(99_000, 103_000, 100_000000, 0, 0, address(0));
 
         // 4. Sell some shares from an activated bucket
-        (uint256 b2Shares,,) = market.buckets(2);
+        (uint256 b2Shares,,,) = market.buckets(2);
         _sellBucket(market, 2, b2Shares / 4, 0);
         vm.stopPrank();
 
@@ -356,7 +356,7 @@ contract ExpansionTest is Test {
         vm.stopPrank();
 
         // Both traders contributed — bucket should have shares from both
-        (uint256 bShares0,,) = market.buckets(0);
+        (uint256 bShares0,,,) = market.buckets(0);
         assertTrue(bShares0 > 0);
         assertEq(market.activeBucketCount(), 11);
     }

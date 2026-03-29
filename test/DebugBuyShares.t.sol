@@ -50,6 +50,7 @@ contract DebugBuySharesTest is Test {
             1_000_000000,
             POOL_BALANCE,
             bucketRanges,
+            new uint256[](0),
             50,
             2000,
             _defaultMetadata(),

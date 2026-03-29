@@ -60,7 +60,7 @@ contract ResolveScript is Script {
         console.log("\n  Bucket distribution (all buckets):");
         console.log("  idx  lowerBound  upperBound    shares");
         for (uint256 i = 0; i < n; i++) {
-            (uint256 bShares, uint256 bLower, uint256 bUpper) = market.buckets(i);
+            (uint256 bShares,, uint256 bLower, uint256 bUpper) = market.buckets(i);
             console.log("  bucket", i, bLower, bUpper);
             console.log("    shares:", bShares);
         }
@@ -89,7 +89,7 @@ contract ResolveScript is Script {
         uint256 winBucket = (RESOLUTION_VALUE - minVal) / bWidth;
         if (winBucket >= n) winBucket = n - 1;
 
-        (uint256 wbShares, uint256 wbLower, uint256 wbUpper) = market.buckets(winBucket);
+        (uint256 wbShares,, uint256 wbLower, uint256 wbUpper) = market.buckets(winBucket);
 
         console.log("\n  Resolution value:", RESOLUTION_VALUE, market.valueUnit());
         console.log("  Winning bucket:  ", winBucket);

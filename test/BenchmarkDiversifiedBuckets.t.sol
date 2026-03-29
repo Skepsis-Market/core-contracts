@@ -48,7 +48,7 @@ contract BenchmarkDiversifiedBucketsTest is Test {
     function _computeSumExp(LMSRMarket m) internal view returns (uint256 sumExp) {
         uint256 n = m.bucketCount();
         for (uint256 i = 0; i < n; i++) {
-            (uint256 s,,) = m.buckets(i);
+            (uint256 s,,,) = m.buckets(i);
             uint256 r = ((s + m.PHANTOM_SHARES()) * m.WAD()) / m.alpha();
             sumExp += r.exp();
         }
@@ -269,6 +269,7 @@ contract BenchmarkDiversifiedBucketsTest is Test {
             INITIAL_LIQUIDITY / _isqrt(bucketCount),
             INITIAL_LIQUIDITY,
             ranges,
+            new uint256[](0),
             0,
             0,
             _defaultMetadata(),
@@ -323,7 +324,7 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         uint256 buckets = market.bucketCount();
         for (uint256 i = 0; i < buckets; i++) {
             uint256 p = _spotProbability(market, i);
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             string memory line = string.concat(
                 "final=", scenario,
                 "|bucket=", vm.toString(i),
@@ -347,7 +348,7 @@ contract BenchmarkDiversifiedBucketsTest is Test {
     }
 
     function _spotProbability(LMSRMarket market, uint256 bucketId) internal view returns (uint256) {
-        (uint256 shares,,) = market.buckets(bucketId);
+        (uint256 shares,,,) = market.buckets(bucketId);
         uint256 ratio = ((shares + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
         uint256 bucketExp = ratio.exp();
         uint256 sumExp = _computeSumExp(market);
@@ -357,7 +358,7 @@ contract BenchmarkDiversifiedBucketsTest is Test {
     function _liability(LMSRMarket market) internal view returns (uint256 maxShares) {
         uint256 buckets = market.bucketCount();
         for (uint256 i = 0; i < buckets; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }

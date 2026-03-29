@@ -61,9 +61,9 @@ contract RangeEconomicsWalkthroughTest is Test {
     }
 
     function _snap() internal view returns (Snap memory s) {
-        (uint256 s45,,) = market.buckets(45);
-        (uint256 s46,,) = market.buckets(46);
-        (uint256 s47,,) = market.buckets(47);
+        (uint256 s45,,,) = market.buckets(45);
+        (uint256 s46,,,) = market.buckets(46);
+        (uint256 s47,,,) = market.buckets(47);
         s = Snap({
             traderUsdc: usdc.balanceOf(TRADER),
             pool:       market.poolBalance(),
@@ -99,6 +99,7 @@ contract RangeEconomicsWalkthroughTest is Test {
             1_000_000000,       // alpha = POOL / sqrt(100) = $1,000
             POOL,               // poolBalance
             ranges,             // buckets
+            new uint256[](0),   // initialShares
             FEE_BPS,            // 0.5%
             PROTO_BPS,          // 20% of fee
             _meta(),
