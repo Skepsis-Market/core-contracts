@@ -55,15 +55,15 @@ contract RangeEconomicsWalkthroughTest is Test {
         uint256 feesProt;
         uint256 alpha;
         uint256 totalVol;
-        uint256 sharesBkt45;
-        uint256 sharesBkt46;
-        uint256 sharesBkt47;
+        uint256 sharesBkt1145;
+        uint256 sharesBkt1146;
+        uint256 sharesBkt1147;
     }
 
     function _snap() internal view returns (Snap memory s) {
-        (uint256 s45,,,) = market.buckets(45);
-        (uint256 s46,,,) = market.buckets(46);
-        (uint256 s47,,,) = market.buckets(47);
+        (uint256 s1145,,,) = market.buckets(1145);
+        (uint256 s1146,,,) = market.buckets(1146);
+        (uint256 s1147,,,) = market.buckets(1147);
         s = Snap({
             traderUsdc: usdc.balanceOf(TRADER),
             pool:       market.poolBalance(),
@@ -71,9 +71,9 @@ contract RangeEconomicsWalkthroughTest is Test {
             feesProt:   market.feesCollectedProtocol(),
             alpha:      market.alpha(),
             totalVol:   market.totalVolume(),
-            sharesBkt45: s45,
-            sharesBkt46: s46,
-            sharesBkt47: s47
+            sharesBkt1145: s1145,
+            sharesBkt1146: s1146,
+            sharesBkt1147: s1147
         });
     }
 
@@ -81,11 +81,17 @@ contract RangeEconomicsWalkthroughTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
 
-        // 100 buckets: $110,000 → $120,000 in $100 steps
-        uint256[] memory ranges = new uint256[](BUCKET_COUNT + 1);
-        for (uint256 i = 0; i <= BUCKET_COUNT; i++) {
-            ranges[i] = 110000 + (i * 100);
+        // 100 buckets at absolute IDs 1100-1199, width=100
+        uint256 bw = 100;
+        uint256 maxBid = 1199;
+        uint256[] memory seedIds = new uint256[](BUCKET_COUNT);
+        uint256[] memory seedShares = new uint256[](BUCKET_COUNT);
+        uint256 perBucket = POOL / BUCKET_COUNT;
+        for (uint256 i = 0; i < BUCKET_COUNT; i++) {
+            seedIds[i] = 1100 + i;
+            seedShares[i] = perBucket;
         }
+        seedShares[BUCKET_COUNT - 1] += POOL - (perBucket * BUCKET_COUNT);
 
         usdc.mint(CREATOR, POOL);
         vm.startPrank(CREATOR);
@@ -98,8 +104,10 @@ contract RangeEconomicsWalkthroughTest is Test {
             address(0),         // positionNFT (none)
             1_000_000000,       // alpha = POOL / sqrt(100) = $1,000
             POOL,               // poolBalance
-            ranges,             // buckets
-            new uint256[](0),   // initialShares
+            bw,                 // bucketWidth
+            maxBid,             // maxBucketId
+            seedIds,
+            seedShares,
             FEE_BPS,            // 0.5%
             PROTO_BPS,          // 20% of fee
             _meta(),
@@ -280,9 +288,9 @@ contract RangeEconomicsWalkthroughTest is Test {
 
         // ── Remaining shares in buckets ──
         console2.log("");
-        console2.log("  Bucket 45 shares        :", s3.sharesBkt45);
-        console2.log("  Bucket 46 shares        :", s3.sharesBkt46);
-        console2.log("  Bucket 47 shares        :", s3.sharesBkt47);
+        console2.log("  Bucket 45 shares        :", s3.sharesBkt1145);
+        console2.log("  Bucket 46 shares        :", s3.sharesBkt1146);
+        console2.log("  Bucket 47 shares        :", s3.sharesBkt1147);
         console2.log("  (All 3 should be equal -correlated LMSR)");
 
         vm.stopPrank();
@@ -291,8 +299,8 @@ contract RangeEconomicsWalkthroughTest is Test {
         assertGt(sharesStep1, 0, "Step 1 should get shares");
         assertGt(sellReturn, 0, "Step 2 should get USDC back");
         assertGt(sharesStep3, 0, "Step 3 should get shares");
-        assertEq(s3.sharesBkt45, s3.sharesBkt46, "Correlated: buckets should match");
-        assertEq(s3.sharesBkt46, s3.sharesBkt47, "Correlated: buckets should match");
+        assertEq(s3.sharesBkt1145, s3.sharesBkt1146, "Correlated: buckets should match");
+        assertEq(s3.sharesBkt1146, s3.sharesBkt1147, "Correlated: buckets should match");
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -326,8 +334,8 @@ contract RangeEconomicsWalkthroughTest is Test {
         console2.log("  Pool balance            :", s.pool);
         console2.log("  Alpha                   :", s.alpha);
         console2.log("  Fees LP / Protocol      :", s.feesLP, s.feesProt);
-        console2.log("  Bucket shares [45,46,47]:", s.sharesBkt45, s.sharesBkt46);
-        console2.log("  Bucket 47 shares        :", s.sharesBkt47);
+        console2.log("  Bucket shares [45,46,47]:", s.sharesBkt1145, s.sharesBkt1146);
+        console2.log("  Bucket 47 shares        :", s.sharesBkt1147);
     }
 
     function _printQuote(string memory label) internal view {

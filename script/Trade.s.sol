@@ -95,7 +95,7 @@ contract BuyScript is Script {
         usdc.mint(trader, AMOUNT_USDC);
         usdc.approve(address(market), AMOUNT_USDC);
 
-        uint256 lower = market.marketMin() + (BUCKET_ID * market.bucketWidth());
+        uint256 lower = BUCKET_ID * market.bucketWidth();
         uint256 sharesMinted = market.buySharesRange(lower, lower + market.bucketWidth(), AMOUNT_USDC, MIN_SHARES, 0, address(0));
 
         vm.stopBroadcast();
@@ -169,7 +169,7 @@ contract SellScript is Script {
 
         vm.startBroadcast(pk);
 
-        uint256 lower = market.marketMin() + (BUCKET_ID * market.bucketWidth());
+        uint256 lower = BUCKET_ID * market.bucketWidth();
         uint256 payout = market.sellSharesRange(lower, lower + market.bucketWidth(), SHARES_TO_SELL, MIN_PAYOUT, address(0));
 
         vm.stopBroadcast();

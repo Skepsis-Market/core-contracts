@@ -23,54 +23,46 @@ contract LazySeedingTest is Test {
         usdc.mint(trader, 10_000_000_000000);
     }
 
-    /// @dev 200 buckets ($50K-$250K), only center 20 seeded ($90K-$110K)
+    /// @dev 200-bucket capacity ($50K-$250K), only center 20 seeded ($90K-$110K)
     function _createSparse200() internal returns (LMSRMarket) {
-        uint256[] memory ranges = new uint256[](201);
-        for (uint256 i = 0; i <= 200; i++) {
-            ranges[i] = 50000 + (i * 1000); // $50K to $250K, $1K steps
+        // Absolute bucket IDs: 50..249 (value = id * 1000)
+        // Only seed 20 buckets: IDs 90-109 ($90K-$110K)
+        uint256 numSeeded = 20;
+        uint256[] memory seedIds = new uint256[](numSeeded);
+        uint256[] memory seedShares = new uint256[](numSeeded);
+        uint256 perSeeded = POOL / numSeeded;
+        for (uint256 i = 0; i < numSeeded; i++) {
+            seedIds[i] = 90 + i;
+            seedShares[i] = perSeeded;
         }
+        seedShares[numSeeded - 1] += POOL - (perSeeded * numSeeded);
 
-        // Seed only buckets 40-59 ($90K-$110K)
-        // Empty buckets get 1 micro-USDC each (minimum > 0)
-        uint256[] memory shares = new uint256[](200);
-        uint256 emptyShare = 1; // 1 micro-USDC
-        uint256 emptyTotal = 180 * emptyShare;
-        uint256 seededPool = POOL - emptyTotal;
-        uint256 perSeeded = seededPool / 20;
-
-        for (uint256 i = 0; i < 200; i++) {
-            if (i >= 40 && i < 60) {
-                shares[i] = perSeeded;
-            } else {
-                shares[i] = emptyShare;
-            }
-        }
-        // Absorb rounding into last seeded bucket
-        uint256 assigned = perSeeded * 20 + emptyTotal;
-        shares[59] += (POOL - assigned);
-
-        return _deployMarket(1, ranges, shares);
+        return _deployMarket(1, 1000, 249, seedIds, seedShares);
     }
 
     /// @dev 20 buckets ($90K-$110K), all seeded
     function _createDense20() internal returns (LMSRMarket) {
-        uint256[] memory ranges = new uint256[](21);
-        for (uint256 i = 0; i <= 20; i++) {
-            ranges[i] = 90000 + (i * 1000); // $90K to $110K, $1K steps
+        uint256 numBuckets = 20;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 per = POOL / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = 90 + i; // IDs 90-109
+            seedShares[i] = per;
         }
-        return _deployMarket(2, ranges, new uint256[](0)); // uniform
+        seedShares[numBuckets - 1] += POOL - (per * numBuckets);
+        return _deployMarket(2, 1000, 109, seedIds, seedShares);
     }
 
-    function _deployMarket(uint256 id, uint256[] memory ranges, uint256[] memory shares)
+    function _deployMarket(uint256 id, uint256 bw, uint256 maxBid, uint256[] memory seedIds, uint256[] memory seedShares)
         internal returns (LMSRMarket)
     {
-        uint256 buckets = ranges.length - 1;
         uint256 sqrtN = _sqrt(20); // use sqrt(20) for both to match alpha
         uint256 alpha = POOL / sqrtN;
 
         LMSRMarket m = new LMSRMarket(
             id, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, shares, 100, 0,
+            alpha, POOL, bw, maxBid, seedIds, seedShares, 100, 0,
             LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
             address(0)
         );

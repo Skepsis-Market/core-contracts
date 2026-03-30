@@ -43,13 +43,23 @@ contract RoundTripEconomics2BucketTest is Test {
         uint256 bucketShares;
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory ranges = new uint256[](3);
-        ranges[0] = 0;
-        ranges[1] = 1;
-        ranges[2] = 2;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, INITIAL_LIQUIDITY);
 
         market = new LMSRMarket(
             7001,
@@ -59,8 +69,10 @@ contract RoundTripEconomics2BucketTest is Test {
             address(0),
             10_000_000000,
             INITIAL_LIQUIDITY,
-            ranges,
-            new uint256[](0),
+            1,         // bucketWidth
+            1,         // maxBucketId
+            seedIds,
+            seedShares,
             FEE_BPS,
             PROTOCOL_FEE_BPS,
             _defaultMetadata(),
@@ -72,12 +84,12 @@ contract RoundTripEconomics2BucketTest is Test {
     }
 
     function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
     }
 
     function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
     }
 

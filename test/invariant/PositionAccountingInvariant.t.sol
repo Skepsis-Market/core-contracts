@@ -30,7 +30,7 @@ contract PositionHandler is Test {
             usdc.mint(trader, amountUSDC * 2);
         }
 
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
 
         vm.startPrank(trader);
@@ -52,7 +52,7 @@ contract PositionHandler is Test {
         uint256 sharesToSell = (balance * percentBps) / 10000;
         if (sharesToSell == 0) sharesToSell = 1;
 
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
 
         vm.prank(trader);
@@ -86,10 +86,16 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
         usdc = new MockUSDC();
         positionNFT = new PositionNFT(address(this));
 
-        uint256[] memory bucketRanges = new uint256[](6);
-        for (uint256 i = 0; i < 6; i++) {
-            bucketRanges[i] = i * 20;
+        uint256 numBuckets = 5;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 pool = 10000_000000;
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = i;
+            seedShares[i] = per;
         }
+        seedShares[numBuckets - 1] += pool - (per * numBuckets);
 
         market = new LMSRMarket(
             1,
@@ -98,9 +104,11 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
             address(usdc),
             address(positionNFT),
             5_000_000000,
-            10000_000000,
-            bucketRanges,
-            new uint256[](0),
+            pool,
+            20,        // bucketWidth
+            4,         // maxBucketId
+            seedIds,
+            seedShares,
             50,
             2000,
             _defaultMetadata(),

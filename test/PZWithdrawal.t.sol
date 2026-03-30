@@ -28,15 +28,23 @@ contract PZWithdrawalTest is Test {
         });
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory bucketRanges = new uint256[](5);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 75;
-        bucketRanges[4] = 100;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, 1000_000000);
 
         market = new LMSRMarket(
             1,
@@ -46,8 +54,10 @@ contract PZWithdrawalTest is Test {
             positionNFT,
             500_000000,
             1000_000000,
-            bucketRanges,
-            new uint256[](0),
+            25,        // bucketWidth
+            3,         // maxBucketId
+            seedIds,
+            seedShares,
             50,
             2000,
             _defaultMetadata(),

@@ -45,10 +45,21 @@ contract CustomDistributionTest is Test {
         shares[BUCKETS - 1] = POOL - assigned; // remainder to last bucket
     }
 
-    function _createRanges() internal pure returns (uint256[] memory ranges) {
-        ranges = new uint256[](BUCKETS + 1);
-        for (uint256 i = 0; i <= BUCKETS; i++) {
-            ranges[i] = 80000 + (i * 1000); // $80K to $130K in $1K steps
+    function _uniformSeedsCD() internal pure returns (uint256[] memory ids, uint256[] memory shares) {
+        ids = new uint256[](BUCKETS);
+        shares = new uint256[](BUCKETS);
+        uint256 per = POOL / BUCKETS;
+        for (uint256 i = 0; i < BUCKETS; i++) {
+            ids[i] = 80 + i;
+            shares[i] = per;
+        }
+        shares[BUCKETS - 1] += POOL - (per * BUCKETS);
+    }
+
+    function _createSeedIds() internal pure returns (uint256[] memory ids) {
+        ids = new uint256[](BUCKETS);
+        for (uint256 i = 0; i < BUCKETS; i++) {
+            ids[i] = 80 + i; // absolute bucket IDs 80-129 (value = id * 1000)
         }
     }
 
@@ -62,13 +73,13 @@ contract CustomDistributionTest is Test {
 
     function test_customDist_50buckets_creates() public {
         uint256[] memory shares = _bellCurveShares();
-        uint256[] memory ranges = _createRanges();
+        // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7; // ~sqrt(50) ≈ 7
 
         uint256 g0 = gasleft();
         LMSRMarket market = new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, shares, 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
         );
         uint256 g1 = gasleft();
 
@@ -82,8 +93,8 @@ contract CustomDistributionTest is Test {
         console.log("Alpha:                ", market.alpha() / 1e6, "USDC");
 
         // Verify distribution
-        (uint256 centerShares,,,) = market.buckets(25);
-        (uint256 edgeShares,,,) = market.buckets(0);
+        (uint256 centerShares,,,) = market.buckets(105);
+        (uint256 edgeShares,,,) = market.buckets(80);
         console.log("Center bucket shares: ", centerShares / 1e6, "USDC");
         console.log("Edge bucket shares:   ", edgeShares / 1e6, "USDC");
         console.log("Center/Edge ratio:    ", centerShares / edgeShares, "x");
@@ -93,14 +104,15 @@ contract CustomDistributionTest is Test {
     }
 
     function test_customDist_50buckets_uniformComparison() public {
-        uint256[] memory ranges = _createRanges();
+        // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
         // Uniform
         uint256 g0 = gasleft();
+        (uint256[] memory uIds, uint256[] memory uShares) = _uniformSeedsCD();
         LMSRMarket uniform = new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, new uint256[](0), 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, uIds, uShares, 50, 0, _meta(), address(0)
         );
         uint256 g1 = gasleft();
         uint256 uniformGas = g0 - g1;
@@ -110,7 +122,7 @@ contract CustomDistributionTest is Test {
         g0 = gasleft();
         LMSRMarket custom = new LMSRMarket(
             2, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, shares, 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
         );
         g1 = gasleft();
         uint256 customGas = g0 - g1;
@@ -118,7 +130,7 @@ contract CustomDistributionTest is Test {
         console.log("=== GAS COMPARISON (50 buckets) ===");
         console.log("Uniform creation gas: ", uniformGas);
         console.log("Custom creation gas:  ", customGas);
-        console.log("Custom overhead:      ", customGas - uniformGas);
+        console.log("Difference:           ", customGas > uniformGas ? customGas - uniformGas : uniformGas - customGas);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -127,12 +139,12 @@ contract CustomDistributionTest is Test {
 
     function test_customDist_buyCenter() public {
         uint256[] memory shares = _bellCurveShares();
-        uint256[] memory ranges = _createRanges();
+        // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
         LMSRMarket market = new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, shares, 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
         );
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), POOL);
@@ -143,7 +155,7 @@ contract CustomDistributionTest is Test {
         posNFT.setApprovalForAll(address(market), true);
 
         uint256 buyAmount = 1000_000000; // $1K
-        uint256 lower = market.marketMin() + (25 * market.bucketWidth());
+        uint256 lower = 25 * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
 
         uint256 g0 = gasleft();
@@ -159,12 +171,12 @@ contract CustomDistributionTest is Test {
 
     function test_customDist_buyTail() public {
         uint256[] memory shares = _bellCurveShares();
-        uint256[] memory ranges = _createRanges();
+        // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
         LMSRMarket market = new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, shares, 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
         );
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), POOL);
@@ -175,7 +187,7 @@ contract CustomDistributionTest is Test {
         posNFT.setApprovalForAll(address(market), true);
 
         uint256 buyAmount = 1000_000000; // $1K
-        uint256 lower = market.marketMin(); // bucket 0 = $80K (far tail)
+        uint256 lower = 0; // bucket 0 = $80K (far tail)
         uint256 upper = lower + market.bucketWidth();
 
         uint256 g0 = gasleft();
@@ -195,12 +207,12 @@ contract CustomDistributionTest is Test {
 
     function test_customDist_fullLifecycle() public {
         uint256[] memory shares = _bellCurveShares();
-        uint256[] memory ranges = _createRanges();
+        // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
         LMSRMarket market = new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, shares, 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
         );
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), POOL);
@@ -210,12 +222,12 @@ contract CustomDistributionTest is Test {
         usdc.approve(address(market), type(uint256).max);
         posNFT.setApprovalForAll(address(market), true);
 
-        uint256 lower = market.marketMin() + (3 * market.bucketWidth()); // bucket 3 = $83K
+        uint256 lower = 83 * market.bucketWidth(); // bucket 83 = $83K
         uint256 upper = lower + market.bucketWidth();
         uint256 sharesBought = market.buySharesRange(lower, upper, 5000_000000, 0, 0, trader);
         vm.stopPrank();
 
-        // Resolve at $83.5K = bucket 3
+        // Resolve at $83.5K = bucket 83
         vm.prank(creator);
         market.resolveMarket(83500);
 
@@ -226,7 +238,7 @@ contract CustomDistributionTest is Test {
         uint256 lpGot = usdc.balanceOf(creator) - creatorBefore;
 
         // Trader claims
-        uint256 tokenId = (uint256(uint128(1)) << 128) | (uint256(uint64(3)) << 64) | uint256(uint64(3));
+        uint256 tokenId = (uint256(uint128(1)) << 128) | (uint256(uint64(83)) << 64) | uint256(uint64(83));
         uint256 traderBefore = usdc.balanceOf(trader);
         vm.prank(trader);
         market.claim(tokenId, trader);
@@ -251,7 +263,7 @@ contract CustomDistributionTest is Test {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_customDist_revertIfSumMismatch() public {
-        uint256[] memory ranges = _createRanges();
+        // ranges no longer needed with absolute bucket indexing
         uint256[] memory badShares = new uint256[](BUCKETS);
         for (uint256 i = 0; i < BUCKETS; i++) badShares[i] = 1000_000000; // $1K each = $50K ≠ POOL
         uint256 alpha = POOL / 7;
@@ -259,30 +271,29 @@ contract CustomDistributionTest is Test {
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
         new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, badShares, 50, 0, _meta(), address(0)
+            alpha, POOL, 1000, 129, _createSeedIds(), badShares, 50, 0, _meta(), address(0)
         );
     }
 
     function test_customDist_revertIfZeroBucket() public {
-        uint256[] memory ranges = _createRanges();
         uint256[] memory badShares = _bellCurveShares();
         badShares[0] = 0; // zero bucket
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
         new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            POOL / 7, POOL, ranges, badShares, 50, 0, _meta(), address(0)
+            POOL / 7, POOL, 1000, 129, _createSeedIds(), badShares, 50, 0, _meta(), address(0)
         );
     }
 
     function test_customDist_revertIfWrongLength() public {
-        uint256[] memory ranges = _createRanges();
-        uint256[] memory badShares = new uint256[](10); // wrong length
+        uint256[] memory badIds = new uint256[](10);
+        uint256[] memory badShares = new uint256[](11); // wrong length vs ids
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
         new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            POOL / 7, POOL, ranges, badShares, 50, 0, _meta(), address(0)
+            POOL / 7, POOL, 1000, 129, badIds, badShares, 50, 0, _meta(), address(0)
         );
     }
 }

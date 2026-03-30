@@ -90,12 +90,26 @@ contract CreateMarketScript is Script {
         require(factory.creatorAllowance(deployer) > 0, "Deployer has no creator allowance");
         require(vault.deployableCapital() >= SEED_AMOUNT, "Vault: insufficient deployable capital");
 
+        // Absolute bucket indexing
+        uint256 bw = (MARKET_MAX - MARKET_MIN) / BUCKET_COUNT;
+        uint256 startBucket = MARKET_MIN / bw;
+        uint256 maxBid = startBucket + BUCKET_COUNT - 1;
+        uint256[] memory seedIds = new uint256[](BUCKET_COUNT);
+        uint256[] memory seedShares = new uint256[](BUCKET_COUNT);
+        uint256 perBucket = SEED_AMOUNT / BUCKET_COUNT;
+        for (uint256 i = 0; i < BUCKET_COUNT; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = perBucket;
+        }
+        seedShares[BUCKET_COUNT - 1] += SEED_AMOUNT - (perBucket * BUCKET_COUNT);
+        
         MarketFactory.MarketParams memory p;
         p.alpha                   = ALPHA_INITIAL;
         p.seedAmount              = SEED_AMOUNT;
-        p.minValue                = MARKET_MIN;
-        p.maxValue                = MARKET_MAX;
-        p.bucketCount             = BUCKET_COUNT;
+        p.bucketWidth             = bw;
+        p.maxBucketId             = maxBid;
+        p.seededBucketIds         = seedIds;
+        p.seededShares            = seedShares;
         // fees come from factory defaults — no per-market override
         p.alphaFinal              = (ALPHA_INITIAL * DECAY_FINAL_BPS) / 10000;
         p.decayDuration           = DECAY_DURATION;

@@ -29,13 +29,15 @@ contract MarketFactoryTest is Test {
         usdc = new MockUSDC();
 
         // Deploy LMSRMarket implementation (EIP-1167 clone source for all markets)
-        uint256[] memory implRanges = new uint256[](2);
-        implRanges[0] = 0;
-        implRanges[1] = 1;
+        uint256[] memory implSeedIds = new uint256[](2);
+        uint256[] memory implSeedShares = new uint256[](2);
+        implSeedIds[0] = 0; implSeedIds[1] = 1;
+        implSeedShares[0] = 1; implSeedShares[1] = 1; // minimal valid
         LMSRMarket.MarketMetadata memory implMeta;
+        // Implementation needs valid init — use minimal valid params
         address lmsrImpl = address(new LMSRMarket(
             0, address(0), address(0), address(usdc), address(0),
-            1, 1, implRanges, new uint256[](0), 0, 0, implMeta, address(0xFEE)
+            1, 2, 1, 1, implSeedIds, implSeedShares, 0, 0, implMeta, address(0xFEE) // alpha=1, pool=2, width=1, maxBid=1
         ));
 
         // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
@@ -78,7 +80,7 @@ contract MarketFactoryTest is Test {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// @dev Build a MarketParams struct with new Sui-parity format
+    /// @dev Build a MarketParams struct with absolute bucket indexing
     function _params(
         uint256 seedAmount,
         uint256 minValue,
@@ -87,11 +89,25 @@ contract MarketFactoryTest is Test {
         uint256 feeBps,
         uint256 protoBps
     ) internal pure returns (MarketFactory.MarketParams memory p) {
-        p.alpha        = seedAmount / _isqrt(bucketCount);
-        p.seedAmount   = seedAmount;
-        p.minValue     = minValue;
-        p.maxValue     = maxValue;
-        p.bucketCount  = bucketCount;
+        uint256 bw = (maxValue - minValue) / bucketCount;
+        uint256 startBucket = minValue / bw;
+        uint256 maxBid = startBucket + bucketCount - 1;
+        
+        uint256[] memory seedIds = new uint256[](bucketCount);
+        uint256[] memory seedShares = new uint256[](bucketCount);
+        uint256 per = seedAmount / bucketCount;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = per;
+        }
+        seedShares[bucketCount - 1] += seedAmount - (per * bucketCount);
+        
+        p.alpha           = seedAmount / _isqrt(bucketCount);
+        p.seedAmount      = seedAmount;
+        p.bucketWidth     = bw;
+        p.maxBucketId     = maxBid;
+        p.seededBucketIds = seedIds;
+        p.seededShares    = seedShares;
     }
 
     function _isqrt(uint256 x) internal pure returns (uint256) {
@@ -184,27 +200,35 @@ contract MarketFactoryTest is Test {
         vm.expectRevert(MarketFactory.PoolBalanceTooLow.selector);
         factory.createMarket(_params(50_000000, 0, 100, 4, 0, 0)); // $50 < $100 min
 
-        // Too few buckets (bucketCount < 2)
+        // Too few buckets (seededBucketIds.length < 2)
         MarketFactory.MarketParams memory pFew;
         pFew.alpha = 500_000000;
         pFew.seedAmount = minPoolBalance;
-        pFew.minValue = 0;
-        pFew.maxValue = 100;
-        pFew.bucketCount = 1; // must be >= 2
+        pFew.bucketWidth = 50;
+        pFew.maxBucketId = 1;
+        pFew.seededBucketIds = new uint256[](1);
+        pFew.seededBucketIds[0] = 0;
+        pFew.seededShares = new uint256[](1);
+        pFew.seededShares[0] = minPoolBalance;
 
         vm.prank(creator1);
         vm.expectRevert(MarketFactory.InvalidParameters.selector);
         factory.createMarket(pFew);
 
-        // Invalid range (minValue >= maxValue)
-        vm.prank(creator1);
-        vm.expectRevert(MarketFactory.InvalidBucketRanges.selector);
-        factory.createMarket(_params(minPoolBalance, 100, 50, 4, 0, 0)); // min > max
+        // Mismatched seed arrays
+        MarketFactory.MarketParams memory pBad;
+        pBad.alpha = 500_000000;
+        pBad.seedAmount = minPoolBalance;
+        pBad.bucketWidth = 50;
+        pBad.maxBucketId = 1;
+        pBad.seededBucketIds = new uint256[](2);
+        pBad.seededBucketIds[0] = 0;
+        pBad.seededBucketIds[1] = 1;
+        pBad.seededShares = new uint256[](3); // wrong length
 
-        // Non-even bucket widths
         vm.prank(creator1);
         vm.expectRevert(MarketFactory.InvalidBucketRanges.selector);
-        factory.createMarket(_params(minPoolBalance, 0, 100, 3, 0, 0)); // 100/3 not even
+        factory.createMarket(pBad);
     }
 
     function test_createMarket_transfersUSDC() public {

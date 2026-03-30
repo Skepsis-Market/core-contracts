@@ -33,11 +33,18 @@ contract RangeLMSRTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         
-        // Create bucket ranges: $110,000 to $120,000 in $100 increments
-        uint256[] memory ranges = new uint256[](BUCKET_COUNT + 1);
-        for (uint256 i = 0; i <= BUCKET_COUNT; i++) {
-            ranges[i] = 110000 + (i * 100); // $110,000, $110,100, ... $120,000
+        // 100 buckets at absolute IDs 1100-1199, width=100
+        // bucket 1100 covers value [110000, 110100)
+        uint256 bw = 100;
+        uint256 maxBid = 1199; // tree capacity covers 0..1199
+        uint256[] memory seedIds = new uint256[](BUCKET_COUNT);
+        uint256[] memory seedShares = new uint256[](BUCKET_COUNT);
+        uint256 perBucket = POOL / BUCKET_COUNT;
+        for (uint256 i = 0; i < BUCKET_COUNT; i++) {
+            seedIds[i] = 1100 + i;
+            seedShares[i] = perBucket;
         }
+        seedShares[BUCKET_COUNT - 1] += POOL - (perBucket * BUCKET_COUNT);
         
         // Fund creator and create market
         usdc.mint(creator, POOL);
@@ -52,8 +59,10 @@ contract RangeLMSRTest is Test {
             address(0),     // positionNFT (not used yet)
             1_000_000000,   // alpha = POOL / sqrt(100)
             POOL,           // poolBalance
-            ranges,         // bucket ranges
-            new uint256[](0), // initialShares
+            bw,             // bucketWidth
+            maxBid,         // maxBucketId
+            seedIds,
+            seedShares,
             50,             // feeBps (0.5%)
             2000,           // protocolFeeBps (20% of fees)
             _defaultMetadata(),
@@ -68,20 +77,19 @@ contract RangeLMSRTest is Test {
     }
 
     function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
     }
 
     function _buyBucket(LMSRMarket m, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
-        uint256 lower = m.marketMin() + (bucketId * m.bucketWidth());
+        uint256 lower = bucketId * m.bucketWidth();
         return m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
     }
     
     function test_marketBoundsSetCorrectly() public view {
-        assertEq(market.marketMin(), 110000, "Market min should be 110000");
-        assertEq(market.marketMax(), 120000, "Market max should be 120000");
         assertEq(market.bucketWidth(), 100, "Bucket width should be 100");
-        assertEq(market.bucketCount(), 100, "Bucket count should be 100");
+        assertEq(market.maxBucketId(), 1199, "Max bucket ID should be 1199");
+        assertEq(market.activeBucketCount(), 100, "Active bucket count should be 100");
     }
     
     function test_getQuoteForRange() public view {
@@ -132,10 +140,10 @@ contract RangeLMSRTest is Test {
     
     function test_buySharesRange_affectsAllBucketsInRange() public {
         // Get bucket shares before
-        (uint256 sharesBucket45Before,,,) = market.buckets(45);
-        (uint256 sharesBucket46Before,,,) = market.buckets(46);
-        (uint256 sharesBucket47Before,,,) = market.buckets(47);
-        (uint256 sharesBucket44Before,,,) = market.buckets(44); // Outside range
+        (uint256 sharesBucket45Before,,,) = market.buckets(1145);
+        (uint256 sharesBucket46Before,,,) = market.buckets(1146);
+        (uint256 sharesBucket47Before,,,) = market.buckets(1147);
+        (uint256 sharesBucket44Before,,,) = market.buckets(1144); // Outside range
         
         vm.startPrank(trader);
         usdc.approve(address(market), 10_000000);
@@ -143,10 +151,10 @@ contract RangeLMSRTest is Test {
         vm.stopPrank();
         
         // Get bucket shares after
-        (uint256 sharesBucket45After,,,) = market.buckets(45);
-        (uint256 sharesBucket46After,,,) = market.buckets(46);
-        (uint256 sharesBucket47After,,,) = market.buckets(47);
-        (uint256 sharesBucket44After,,,) = market.buckets(44);
+        (uint256 sharesBucket45After,,,) = market.buckets(1145);
+        (uint256 sharesBucket46After,,,) = market.buckets(1146);
+        (uint256 sharesBucket47After,,,) = market.buckets(1147);
+        (uint256 sharesBucket44After,,,) = market.buckets(1144);
         
         console.log("=== Bucket Share Changes ===");
         console.log("Bucket 44 (outside): before=", sharesBucket44Before, "after=", sharesBucket44After);
@@ -171,23 +179,38 @@ contract RangeLMSRTest is Test {
         // Compare: buying 3 buckets atomically vs 3 single-bucket buys
         
         // Setup two identical markets
-        uint256[] memory ranges = new uint256[](BUCKET_COUNT + 1);
-        for (uint256 i = 0; i <= BUCKET_COUNT; i++) {
-            ranges[i] = 110000 + (i * 100);
+        uint256 bw2 = 100;
+        uint256 maxBid2 = 1199;
+        uint256[] memory sIds = new uint256[](BUCKET_COUNT);
+        uint256[] memory sSh = new uint256[](BUCKET_COUNT);
+        uint256 pp = POOL / BUCKET_COUNT;
+        for (uint256 i = 0; i < BUCKET_COUNT; i++) {
+            sIds[i] = 1100 + i;
+            sSh[i] = pp;
         }
+        sSh[BUCKET_COUNT - 1] += POOL - (pp * BUCKET_COUNT);
         
         usdc.mint(creator, POOL * 2);
         vm.startPrank(creator);
         
         LMSRMarket marketRange = new LMSRMarket(
             2, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, new uint256[](0), 50, 2000, _defaultMetadata(), address(0xFEE)
+            1_000_000000, POOL, bw2, maxBid2, sIds, sSh, 50, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.transfer(address(marketRange), POOL);
         
+        // Need fresh arrays for second market
+        uint256[] memory sIds2 = new uint256[](BUCKET_COUNT);
+        uint256[] memory sSh2 = new uint256[](BUCKET_COUNT);
+        for (uint256 i = 0; i < BUCKET_COUNT; i++) {
+            sIds2[i] = 1100 + i;
+            sSh2[i] = pp;
+        }
+        sSh2[BUCKET_COUNT - 1] += POOL - (pp * BUCKET_COUNT);
+        
         LMSRMarket marketSingle = new LMSRMarket(
             3, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, ranges, new uint256[](0), 50, 2000, _defaultMetadata(), address(0xFEE)
+            1_000_000000, POOL, bw2, maxBid2, sIds2, sSh2, 50, 2000, _defaultMetadata(), address(0xFEE)
         );
         usdc.transfer(address(marketSingle), POOL);
         vm.stopPrank();
@@ -203,9 +226,9 @@ contract RangeLMSRTest is Test {
         // SINGLE BUYS: $3.33 per bucket (same total $10)
         usdc.approve(address(marketSingle), 10_000000);
         uint256 amountPerBucket = uint256(10_000000) / 3;
-        uint256 sharesSingle1 = _buyBucket(marketSingle, 45, amountPerBucket, 0);
-        uint256 sharesSingle2 = _buyBucket(marketSingle, 46, amountPerBucket, 0);
-        uint256 sharesSingle3 = _buyBucket(marketSingle, 47, amountPerBucket, 0);
+        uint256 sharesSingle1 = _buyBucket(marketSingle, 1145, amountPerBucket, 0);
+        uint256 sharesSingle2 = _buyBucket(marketSingle, 1146, amountPerBucket, 0);
+        uint256 sharesSingle3 = _buyBucket(marketSingle, 1147, amountPerBucket, 0);
         vm.stopPrank();
         
         console.log("=== Range Buy vs Single Buys ===");
@@ -242,7 +265,7 @@ contract RangeLMSRTest is Test {
         market.resolveMarket(114600);
 
         // Verify resolution
-        assertEq(market.winningBucket(), 46);
+        assertEq(market.winningBucket(), 1146);
         assertTrue(shares > 0, "Should have received shares");
         // NOTE: claim() requires PositionNFT; tested in LMSRMarketPositionAccounting.t.sol
     }
@@ -259,8 +282,8 @@ contract RangeLMSRTest is Test {
         market.resolveMarket(115000);
 
         // Verify winning bucket is outside the range
-        assertEq(market.winningBucket(), 50);
-        assertTrue(market.winningBucket() < 45 || market.winningBucket() > 47, "Winning bucket outside range");
+        assertEq(market.winningBucket(), 1150);
+        assertTrue(market.winningBucket() < 1145 || market.winningBucket() > 1147, "Winning bucket outside range");
     }
     
     function test_sellSharesRange() public {
@@ -296,18 +319,18 @@ contract RangeLMSRTest is Test {
         uint256 shares = market.buySharesRange(114500, 114800, 10_000000, 0, 0, address(0));
         
         // Get bucket shares before sell
-        (uint256 sharesBucket45Before,,,) = market.buckets(45);
-        (uint256 sharesBucket46Before,,,) = market.buckets(46);
-        (uint256 sharesBucket47Before,,,) = market.buckets(47);
+        (uint256 sharesBucket45Before,,,) = market.buckets(1145);
+        (uint256 sharesBucket46Before,,,) = market.buckets(1146);
+        (uint256 sharesBucket47Before,,,) = market.buckets(1147);
         
         // Sell
         market.sellSharesRange(114500, 114800, shares, 0, address(0));
         vm.stopPrank();
         
         // Get bucket shares after sell
-        (uint256 sharesBucket45After,,,) = market.buckets(45);
-        (uint256 sharesBucket46After,,,) = market.buckets(46);
-        (uint256 sharesBucket47After,,,) = market.buckets(47);
+        (uint256 sharesBucket45After,,,) = market.buckets(1145);
+        (uint256 sharesBucket46After,,,) = market.buckets(1146);
+        (uint256 sharesBucket47After,,,) = market.buckets(1147);
         
         // All buckets should decrease by same amount
         uint256 delta45 = sharesBucket45Before - sharesBucket45After;

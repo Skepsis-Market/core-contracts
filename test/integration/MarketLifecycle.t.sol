@@ -33,13 +33,14 @@ contract MarketLifecycleTest is Test {
 
         // Deploy LMSRMarket implementation (EIP-1167 clone source)
         {
-            uint256[] memory implRanges = new uint256[](2);
-            implRanges[0] = 0;
-            implRanges[1] = 1;
+            uint256[] memory implSeedIds = new uint256[](2);
+            uint256[] memory implSeedShares = new uint256[](2);
+            implSeedIds[0] = 0; implSeedIds[1] = 1;
+            implSeedShares[0] = 1; implSeedShares[1] = 1;
             LMSRMarket.MarketMetadata memory implMeta;
             address lmsrImpl = address(new LMSRMarket(
                 0, address(0), address(0), address(usdc), address(0),
-                1, 1, implRanges, new uint256[](0), 0, 0, implMeta, address(0xFEE)
+                1, 2, 1, 1, implSeedIds, implSeedShares, 0, 0, implMeta, address(0xFEE)
             ));
 
             // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
@@ -98,11 +99,25 @@ contract MarketLifecycleTest is Test {
         uint256 feeBps,
         uint256 protoBps
     ) internal pure returns (MarketFactory.MarketParams memory p) {
-        p.alpha        = sa / _isqrt(bucketCount);
-        p.seedAmount   = sa;
-        p.minValue     = minValue;
-        p.maxValue     = maxValue;
-        p.bucketCount  = bucketCount;
+        uint256 bw = (maxValue - minValue) / bucketCount;
+        uint256 startBucket = (minValue == 0) ? 0 : minValue / bw;
+        uint256 maxBid = startBucket + bucketCount - 1;
+        
+        uint256[] memory seedIds = new uint256[](bucketCount);
+        uint256[] memory seedShares = new uint256[](bucketCount);
+        uint256 per = sa / bucketCount;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = per;
+        }
+        seedShares[bucketCount - 1] += sa - (per * bucketCount);
+        
+        p.alpha           = sa / _isqrt(bucketCount);
+        p.seedAmount      = sa;
+        p.bucketWidth     = bw;
+        p.maxBucketId     = maxBid;
+        p.seededBucketIds = seedIds;
+        p.seededShares    = seedShares;
     }
 
     function _isqrt(uint256 x) internal pure returns (uint256) {
@@ -126,11 +141,11 @@ contract MarketLifecycleTest is Test {
     }
 
     function _buyBucket(LMSRMarket m, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
-        uint256 lower = m.marketMin() + (bucketId * m.bucketWidth());
+        uint256 lower = bucketId * m.bucketWidth();
         return m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
     }
     function _sellBucket(LMSRMarket m, uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
-        uint256 lower = m.marketMin() + (bucketId * m.bucketWidth());
+        uint256 lower = bucketId * m.bucketWidth();
         return m.sellSharesRange(lower, lower + m.bucketWidth(), shares, minPayout, address(0));
     }
     function _claimBucket(LMSRMarket m, uint256 bucketId) internal returns (uint256) {

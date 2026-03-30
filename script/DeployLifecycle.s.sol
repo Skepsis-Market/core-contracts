@@ -20,13 +20,14 @@ contract DeployLifecycleScript is Script {
         MockUSDC usdc = new MockUSDC();
 
         // 2. LMSRMarket impl
-        uint256[] memory implRanges = new uint256[](2);
-        implRanges[0] = 0;
-        implRanges[1] = 1;
+        uint256[] memory implSeedIds = new uint256[](2);
+        uint256[] memory implSeedShares = new uint256[](2);
+        implSeedIds[0] = 0; implSeedIds[1] = 1;
+        implSeedShares[0] = 1; implSeedShares[1] = 1;
         LMSRMarket.MarketMetadata memory implMeta;
         address lmsrImpl = address(new LMSRMarket(
             0, address(0), address(0), address(usdc), address(0),
-            1, 1, implRanges, new uint256[](0), 0, 0, implMeta, address(0xFEE)
+            1, 2, 1, 1, implSeedIds, implSeedShares, 0, 0, implMeta, address(0xFEE)
         ));
 
         // 3. PositionNFT (needs predicted factory address)

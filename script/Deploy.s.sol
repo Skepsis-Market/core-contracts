@@ -51,9 +51,7 @@ contract DeployScript is Script {
     // Protects against late snipers as resolution approaches
     uint256 constant DECAY_FINAL_BPS  = 3000;           // 30% of alphaInitial
     uint256 constant DECAY_DURATION   = 30 days;
-    // Dynamic range expansion: 0 = disabled
-    uint256 constant EXPANDED_MIN     = 0;              // 0 = no expansion below
-    uint256 constant EXPANDED_MAX     = 0;              // 0 = no expansion above
+
 
     // ─── Runtime ─────────────────────────────────────────────────────────────
     address public deployer;
@@ -99,13 +97,14 @@ contract DeployScript is Script {
         // Deploys a locked LMSRMarket template. MarketFactory Clones.clone()s it for every
         // new market, removing 43k of LMSRMarket initcode from MarketFactory's bytecode.
         {
-            uint256[] memory implRanges = new uint256[](2);
-            implRanges[0] = 0;
-            implRanges[1] = 1;
+            uint256[] memory implSeedIds = new uint256[](2);
+            uint256[] memory implSeedShares = new uint256[](2);
+            implSeedIds[0] = 0; implSeedIds[1] = 1;
+            implSeedShares[0] = 1; implSeedShares[1] = 1;
             LMSRMarket.MarketMetadata memory implMeta;
             lmsrImpl = address(new LMSRMarket(
                 0, address(0), address(0), address(usdc), address(0),
-                1, 1, implRanges, new uint256[](0), 0, 0, implMeta, address(0xFEE)
+                1, 2, 1, 1, implSeedIds, implSeedShares, 0, 0, implMeta, address(0xFEE)
             ));
         }
         console.log("  LMSRMarket impl:", lmsrImpl);
@@ -167,16 +166,28 @@ contract DeployScript is Script {
 
         uint256 alphaInitial = MARKET_POOL / 3;
 
+        // Absolute bucket indexing: bucket = value / bucketWidth
+        uint256 bw = (MARKET_MAX - MARKET_MIN) / MARKET_BUCKETS; // = 10
+        uint256 startBucket = MARKET_MIN / bw; // = 1
+        uint256 maxBid = startBucket + MARKET_BUCKETS - 1; // = 19
+        uint256[] memory seedIds = new uint256[](MARKET_BUCKETS);
+        uint256[] memory seedShares = new uint256[](MARKET_BUCKETS);
+        uint256 perBucket = MARKET_POOL / MARKET_BUCKETS;
+        for (uint256 i = 0; i < MARKET_BUCKETS; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = perBucket;
+        }
+        seedShares[MARKET_BUCKETS - 1] += MARKET_POOL - (perBucket * MARKET_BUCKETS);
+
         MarketFactory.MarketParams memory p;
         p.alpha          = alphaInitial;
         p.seedAmount     = MARKET_POOL;
-        p.minValue       = MARKET_MIN;
-        p.maxValue       = MARKET_MAX;
-        p.bucketCount    = MARKET_BUCKETS;
+        p.bucketWidth    = bw;
+        p.maxBucketId    = maxBid;
+        p.seededBucketIds = seedIds;
+        p.seededShares   = seedShares;
         p.alphaFinal     = (alphaInitial * DECAY_FINAL_BPS) / 10000;
         p.decayDuration  = DECAY_DURATION;
-        p.expandedMinValue = EXPANDED_MIN;
-        p.expandedMaxValue = EXPANDED_MAX;
 
         address marketAddr = factory.createMarket(p);
         LMSRMarket market  = LMSRMarket(marketAddr);

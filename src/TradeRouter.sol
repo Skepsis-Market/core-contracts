@@ -137,9 +137,9 @@ contract TradeRouter is Ownable, Pausable {
     ) external whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
         if (sharesToSell == 0) revert ZeroAmount();
 
-        // Compute tokenId for this range
-        uint256 startBucket = (rangeLower - market.marketMin()) / market.bucketWidth();
-        uint256 endBucket = ((rangeUpper - 1) - market.marketMin()) / market.bucketWidth();
+        // Compute tokenId for this range (absolute bucket indexing)
+        uint256 startBucket = rangeLower / market.bucketWidth();
+        uint256 endBucket = (rangeUpper - 1) / market.bucketWidth();
         uint256 tokenId = (uint256(uint128(market.marketId())) << 128)
             | (uint256(uint64(startBucket)) << 64)
             | uint256(uint64(endBucket));

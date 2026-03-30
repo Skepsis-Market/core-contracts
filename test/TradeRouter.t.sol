@@ -28,6 +28,19 @@ contract TradeRouterTest is Test {
     uint256 marketId = 1;
     uint256 poolBalance = 1000_000000;
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
         factory = address(this);
@@ -35,16 +48,11 @@ contract TradeRouterTest is Test {
         mockFactory = new MockFactory();
         router = new TradeRouter(address(usdc), address(posNFT), address(mockFactory));
 
-        uint256[] memory ranges = new uint256[](5);
-        ranges[0] = 0;
-        ranges[1] = 25;
-        ranges[2] = 50;
-        ranges[3] = 75;
-        ranges[4] = 100;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, poolBalance);
 
         market = new LMSRMarket(
             marketId, creator, factory, address(usdc), address(posNFT),
-            500_000000, poolBalance, ranges, new uint256[](0), 50, 2000,
+            500_000000, poolBalance, 25, 3, seedIds, seedShares, 50, 2000,
             LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
             address(0xFEE)
         );

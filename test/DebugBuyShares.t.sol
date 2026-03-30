@@ -36,10 +36,17 @@ contract DebugBuySharesTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         
-        uint256[] memory bucketRanges = new uint256[](101);
-        for (uint256 i = 0; i <= 100; i++) {
-            bucketRanges[i] = 110000 + (i * 100);
+        uint256 bw = 100;
+        uint256 numBuckets = 100;
+        uint256 maxBid = 1199;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 perBucket = POOL_BALANCE / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = 1100 + i;
+            seedShares[i] = perBucket;
         }
+        seedShares[numBuckets - 1] += POOL_BALANCE - (perBucket * numBuckets);
         
         market = new LMSRMarket(
             1,
@@ -49,8 +56,10 @@ contract DebugBuySharesTest is Test {
             positionNFT,
             1_000_000000,
             POOL_BALANCE,
-            bucketRanges,
-            new uint256[](0),
+            bw,
+            maxBid,
+            seedIds,
+            seedShares,
             50,
             2000,
             _defaultMetadata(),

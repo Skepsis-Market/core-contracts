@@ -66,8 +66,8 @@ contract LMSRMarket is ReentrancyGuard {
     uint256 public bucketCount;
 
     // Market bounds for range-to-bucket conversion
-    uint256 public marketMin;     // Minimum value (e.g., 110000 for $110K)
-    uint256 public marketMax;     // Maximum value (e.g., 120000 for $120K)  
+    uint256 public marketMin;     // DEPRECATED — kept for slot layout (was relative min)
+    uint256 public maxBucketId;   // Maximum valid bucket ID (tree capacity - 1)
     uint256 public bucketWidth;   // Value units per bucket
 
     uint256 private cachedLnBucketCount;
@@ -76,7 +76,7 @@ contract LMSRMarket is ReentrancyGuard {
 
     MarketStatus public status;
     uint256 public winningBucket;
-    uint256 public resolutionValue;  // Original value that resolved the market (e.g., $115,000)
+    uint256 public resolutionValue;  // Original value that resolved the market (e.g., $115,000) — absolute bucket index
     uint256 public totalVolume;
     uint256 public resolutionTime;
     bool public lpWithdrawn;
@@ -112,13 +112,13 @@ contract LMSRMarket is ReentrancyGuard {
     /// @notice Configurable protocol fee recipient (replaces hardcoded constant)
     address public protocolFeeCollector;                          // Slot 46
 
-    /// @notice Number of buckets with active LMSR weight (≤ bucketCount when expansion configured)
+    /// @notice Number of buckets with active LMSR weight (≤ maxBucketId + 1)
     uint256 public activeBucketCount;                               // Slot 47
 
-    /// @notice Total bucket capacity including expansion room (0 = no expansion)
+    /// @notice DEPRECATED — was expansion capacity. Kept for slot layout.
     uint256 public maxBucketCount;                                  // Slot 48
 
-    /// @notice Number of expansion buckets below the original range (bucket ID offset)
+    /// @notice DEPRECATED — was index shift for expansion. Kept for slot layout.
     uint256 public initialBucketOffset;                             // Slot 49
 
     /// @notice Authorized trade router — only address allowed to call buy/sell/claim
@@ -182,7 +182,6 @@ contract LMSRMarket is ReentrancyGuard {
     event MarketEmergencyPaused(uint256 indexed marketId);
     event MarketEmergencyUnpaused(uint256 indexed marketId);
     event BucketActivated(uint256 indexed marketId, uint256 indexed bucketId, uint256 lowerBound, uint256 upperBound);
-    event ExpansionConfigured(uint256 indexed marketId, uint256 expandedMin, uint256 expandedMax, uint256 maxBucketCount);
 
     error InvalidParameters();
     error MarketNotActive();
@@ -200,7 +199,6 @@ contract LMSRMarket is ReentrancyGuard {
     error AlreadyInitialized(); // Clone guard: initialize() already called
     error MarketPaused();       // Market is emergency paused
     error RangeTooWide();       // Range exceeds maxRangeWidth
-    error ExpansionAlreadyConfigured(); // configureExpansion() called twice
 
     /// @notice Market metadata for initialization (packed to avoid stack too deep)
     struct MarketMetadata {
@@ -222,8 +220,10 @@ contract LMSRMarket is ReentrancyGuard {
         address _positionNFT,
         uint256 _alpha,
         uint256 _poolBalance,
-        uint256[] memory _bucketRanges,
-        uint256[] memory _initialShares,
+        uint256 _bucketWidth,
+        uint256 _maxBucketId,
+        uint256[] memory _seededBucketIds,
+        uint256[] memory _seededShares,
         uint256 _feeBps,
         uint256 _protocolFeeBps,
         MarketMetadata memory _metadata,
@@ -231,7 +231,8 @@ contract LMSRMarket is ReentrancyGuard {
     ) {
         initialize(
             _marketId, _creator, _factory, _usdcToken, _positionNFT,
-            _alpha, _poolBalance, _bucketRanges, _initialShares, _feeBps, _protocolFeeBps, _metadata,
+            _alpha, _poolBalance, _bucketWidth, _maxBucketId,
+            _seededBucketIds, _seededShares, _feeBps, _protocolFeeBps, _metadata,
             _protocolFeeCollector
         );
     }
@@ -239,6 +240,10 @@ contract LMSRMarket is ReentrancyGuard {
     /// @notice Initialize market state. Called by the constructor on direct deployment,
     ///         and by MarketFactory after Clones.clone() on the EIP-1167 proxy path.
     ///         Can only be invoked once per contract instance (_initialized guard).
+    /// @param _bucketWidth Value units per bucket (e.g., 1000 for $1K buckets)
+    /// @param _maxBucketId Maximum valid bucket ID (tree capacity = _maxBucketId + 1)
+    /// @param _seededBucketIds Absolute bucket IDs to seed with initial shares
+    /// @param _seededShares Shares for each seeded bucket (parallel array, sum = _poolBalance)
     function initialize(
         uint256 _marketId,
         address _creator,
@@ -247,8 +252,10 @@ contract LMSRMarket is ReentrancyGuard {
         address _positionNFT,
         uint256 _alpha,
         uint256 _poolBalance,
-        uint256[] memory _bucketRanges,
-        uint256[] memory _initialShares,
+        uint256 _bucketWidth,
+        uint256 _maxBucketId,
+        uint256[] memory _seededBucketIds,
+        uint256[] memory _seededShares,
         uint256 _feeBps,
         uint256 _protocolFeeBps,
         MarketMetadata memory _metadata,
@@ -259,7 +266,9 @@ contract LMSRMarket is ReentrancyGuard {
 
         if (_alpha == 0) revert InvalidParameters();
         if (_poolBalance == 0) revert InvalidParameters();
-        if (_bucketRanges.length < 2) revert InvalidParameters();
+        if (_bucketWidth == 0) revert InvalidParameters();
+        if (_seededBucketIds.length < 2) revert InvalidParameters();
+        if (_seededBucketIds.length != _seededShares.length) revert InvalidParameters();
         if (_feeBps > MAX_FEE_BPS) revert InvalidParameters();
 
         marketId = _marketId;
@@ -286,67 +295,53 @@ contract LMSRMarket is ReentrancyGuard {
         creationTime = block.timestamp;
         protocolFeeCollector = _protocolFeeCollector;
 
-        bucketCount = _bucketRanges.length - 1;
-
-        // Store market bounds for range-to-bucket conversion
-        marketMin = _bucketRanges[0];
-        marketMax = _bucketRanges[_bucketRanges.length - 1];
-        bucketWidth = (marketMax - marketMin) / bucketCount;
+        // Absolute bucket indexing — bucketId = value / bucketWidth
+        bucketWidth = _bucketWidth;
+        maxBucketId = _maxBucketId;
+        bucketCount = _maxBucketId + 1;
+        marketMin = 0; // DEPRECATED — set to 0
 
         // Alpha is a creator-specified market design parameter (6 decimals).
-        // Recommended heuristic: poolBalance / sqrt(bucketCount).
         alphaInitial = alpha;
         alphaFinal = alpha;
         lastAlphaSyncTime = block.timestamp;
         totalDeposited = _poolBalance;
 
-        // Cache ln(n) for cost function calculations (not for alpha anymore)
-        cachedLnBucketCount = bucketCount.fromU256().ln(); // Returns WAD (18 decimals)
+        // Initialize all-zero tree with full capacity
+        _tree.init(uint32(bucketCount), 0);
 
-        // Initialize distribution: custom shares array or uniform fallback
-        bool customDist = _initialShares.length > 0;
-        if (customDist && _initialShares.length != bucketCount) revert InvalidParameters();
+        // Seed buckets with initial shares
+        uint256 seededCount = _seededBucketIds.length;
+        uint256 maxShares = 0;
+        uint256 totalShares = 0;
+        uint256[] memory treeValues = new uint256[](bucketCount);
 
-        if (customDist) {
-            // Custom prior — validate sum == poolBalance, compute per-bucket tree values
-            uint256 maxShares = 0;
-            uint256 totalShares = 0;
-            uint256[] memory treeValues = new uint256[](bucketCount);
+        for (uint256 i = 0; i < seededCount; i++) {
+            uint256 bid = _seededBucketIds[i];
+            uint256 shares = _seededShares[i];
+            if (bid > _maxBucketId) revert InvalidParameters();
+            if (shares == 0) revert InvalidParameters();
 
-            for (uint256 i = 0; i < bucketCount; i++) {
-                uint256 shares = _initialShares[i];
-                if (shares == 0) revert InvalidParameters(); // every bucket needs weight
-                buckets[i] = Bucket({
-                    shares: shares,
-                    initialShares: shares,
-                    lowerBound: _bucketRanges[i],
-                    upperBound: _bucketRanges[i + 1]
-                });
-                treeValues[i] = (((shares + PHANTOM_SHARES) * WAD) / alpha).exp();
-                totalShares += shares;
-                if (shares > maxShares) maxShares = shares;
-            }
-
-            if (totalShares != poolBalance) revert InvalidParameters();
-            // Init tree first (rebuildWithSize requires prior init), then rebuild with custom values
-            _tree.init(uint32(bucketCount), WAD);
-            _tree.rebuildWithSize(uint32(bucketCount), treeValues);
-            maxLiability = maxShares;
-        } else {
-            // Uniform distribution — cheaper: single exp value for all buckets
-            uint256 initialShares = poolBalance / bucketCount;
-            for (uint256 i = 0; i < bucketCount; i++) {
-                buckets[i] = Bucket({
-                    shares: initialShares,
-                    initialShares: initialShares,
-                    lowerBound: _bucketRanges[i],
-                    upperBound: _bucketRanges[i + 1]
-                });
-            }
-            uint256 initExp = (((initialShares + PHANTOM_SHARES) * WAD) / alpha).exp();
-            _tree.init(uint32(bucketCount), initExp);
-            maxLiability = initialShares;
+            uint256 lower = bid * _bucketWidth;
+            uint256 upper = lower + _bucketWidth;
+            buckets[bid] = Bucket({
+                shares: shares,
+                initialShares: shares,
+                lowerBound: lower,
+                upperBound: upper
+            });
+            treeValues[bid] = (((shares + PHANTOM_SHARES) * WAD) / alpha).exp();
+            totalShares += shares;
+            if (shares > maxShares) maxShares = shares;
         }
+
+        if (totalShares != _poolBalance) revert InvalidParameters();
+
+        _tree.rebuildWithSize(uint32(bucketCount), treeValues);
+        maxLiability = maxShares;
+
+        activeBucketCount = seededCount;
+        cachedLnBucketCount = seededCount.fromU256().ln();
 
         // Solvency check
         if (maxLiability > poolBalance + SOLVENCY_DUST) {
@@ -362,10 +357,7 @@ contract LMSRMarket is ReentrancyGuard {
     ///      Capital reserved for a now-impossible high-alpha path is released as surplus.
     ///      For non-decay markets alpha == alphaInitial so behavior is identical.
     function getSafetyBuffer() public view returns (uint256) {
-        uint256 lnCount = maxBucketCount > 0
-            ? activeBucketCount.fromU256().ln()
-            : cachedLnBucketCount;
-        return ((alpha * 2) * lnCount) / WAD;
+        return ((alpha * 2) * cachedLnBucketCount) / WAD;
     }
 
     function getRequiredReserves() public view returns (uint256) {
@@ -469,59 +461,6 @@ contract LMSRMarket is ReentrancyGuard {
     function setMaxRangeWidth(uint256 _maxRangeWidth) external {
         if (msg.sender != factory) revert Unauthorized();
         maxRangeWidth = _maxRangeWidth;
-    }
-
-    /// @notice Configure dynamic range expansion — factory-only, one-time, before any trades
-    /// @dev Remaps existing bucket indices, rebuilds tree with expanded capacity.
-    ///      Inactive buckets have tree leaf = 0 (no LMSR weight) until activated.
-    /// @param expandedMin New minimum value (must be ≤ current marketMin, aligned to bucketWidth)
-    /// @param expandedMax New maximum value (must be ≥ current marketMax, aligned to bucketWidth)
-    function configureExpansion(uint256 expandedMin, uint256 expandedMax) external {
-        if (msg.sender != factory) revert Unauthorized();
-        if (maxBucketCount != 0) revert ExpansionAlreadyConfigured();
-        if (totalVolume != 0) revert InvalidParameters();
-
-        if (expandedMin > marketMin) revert InvalidParameters();
-        if (expandedMax < marketMax) revert InvalidParameters();
-        if ((marketMin - expandedMin) % bucketWidth != 0) revert InvalidParameters();
-        if ((expandedMax - marketMax) % bucketWidth != 0) revert InvalidParameters();
-
-        uint256 bucketsBelow = (marketMin - expandedMin) / bucketWidth;
-        uint256 bucketsAbove = (expandedMax - marketMax) / bucketWidth;
-        uint256 originalCount = bucketCount;
-        uint256 newTotalBuckets = originalCount + bucketsBelow + bucketsAbove;
-
-        initialBucketOffset = bucketsBelow;
-
-        // Remap existing bucket data: shift right by bucketsBelow (work backwards)
-        if (bucketsBelow > 0) {
-            for (uint256 i = originalCount; i > 0;) {
-                unchecked { i--; }
-                uint256 newIdx = i + bucketsBelow;
-                buckets[newIdx] = buckets[i];
-                delete buckets[i];
-            }
-        }
-
-        // Update market bounds
-        marketMin = expandedMin;
-        marketMax = expandedMax;
-        activeBucketCount = originalCount;
-        maxBucketCount = newTotalBuckets;
-
-        // Rebuild tree: active leaves get exp weights, inactive = 0
-        uint256[] memory values = new uint256[](newTotalBuckets);
-        for (uint256 i = 0; i < originalCount; i++) {
-            uint256 q = buckets[i + bucketsBelow].shares + PHANTOM_SHARES;
-            values[i + bucketsBelow] = ((q * WAD) / alpha).exp();
-        }
-
-        _tree.rebuildWithSize(uint32(newTotalBuckets), values);
-
-        bucketCount = newTotalBuckets;
-        cachedLnBucketCount = activeBucketCount.fromU256().ln();
-
-        emit ExpansionConfigured(marketId, expandedMin, expandedMax, newTotalBuckets);
     }
 
     function addLiquidity(uint256 amountUSDC) external nonReentrant onlyActive {
@@ -672,7 +611,7 @@ contract LMSRMarket is ReentrancyGuard {
         // Rebuild tree with new alpha — O(n log n) but runs at most once per epoch (30 min)
         uint256[] memory values = new uint256[](bucketCount);
         for (uint256 i = 0; i < bucketCount; i++) {
-            if (maxBucketCount > 0 && !_isBucketActive(i)) {
+            if (!_isBucketActive(i)) {
                 values[i] = 0; // Inactive leaves stay at 0
                 continue;
             }
@@ -712,12 +651,10 @@ contract LMSRMarket is ReentrancyGuard {
 
         (uint256 startBucket, uint256 endBucket) = _rangeToBuckets(rangeLower, rangeUpper);
 
-        // Activate any inactive buckets in range (expansion markets only)
-        if (maxBucketCount > 0) {
-            for (uint256 b = startBucket; b <= endBucket; b++) {
-                if (!_isBucketActive(b)) {
-                    _activateBucket(b);
-                }
+        // Activate any inactive buckets in range (lazy activation)
+        for (uint256 b = startBucket; b <= endBucket; b++) {
+            if (!_isBucketActive(b)) {
+                _activateBucket(b);
             }
         }
 
@@ -1012,14 +949,12 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 sumBefore = _tree.totalSum();
         uint256 rSum = _tree.rangeSum(uint32(startBucket), uint32(endBucket));
 
-        // For expandable markets, simulate activation of inactive buckets in range
-        if (maxBucketCount > 0) {
-            uint256 phantomExp = ((PHANTOM_SHARES * WAD) / alpha).exp();
-            for (uint256 b = startBucket; b <= endBucket; b++) {
-                if (!_isBucketActive(b)) {
-                    sumBefore += phantomExp;
-                    rSum += phantomExp;
-                }
+        // Simulate activation of inactive buckets in range for accurate quote
+        uint256 phantomExp = ((PHANTOM_SHARES * WAD) / alpha).exp();
+        for (uint256 b = startBucket; b <= endBucket; b++) {
+            if (!_isBucketActive(b)) {
+                sumBefore += phantomExp;
+                rSum += phantomExp;
             }
         }
 
@@ -1031,7 +966,7 @@ contract LMSRMarket is ReentrancyGuard {
         // Solvency cap
         uint256 maxPool = poolBalance + netAmount + SOLVENCY_DUST;
         for (uint256 b = startBucket; b <= endBucket; b++) {
-            uint256 currentShares = (maxBucketCount > 0 && !_isBucketActive(b)) ? 0 : buckets[b].shares;
+            uint256 currentShares = !_isBucketActive(b) ? 0 : buckets[b].shares;
             uint256 available = maxPool > currentShares ? maxPool - currentShares : 0;
             if (available < shares) shares = available;
         }
@@ -1051,22 +986,22 @@ contract LMSRMarket is ReentrancyGuard {
     // INTERNAL HELPERS - Clean separation of concerns
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev Convert value range to bucket indices (called ONCE per transaction)
+    /// @dev Convert value range to absolute bucket indices (called ONCE per transaction)
     /// @param lower Lower bound in value space (inclusive)
     /// @param upper Upper bound in value space (exclusive)
-    /// @return startBucket First bucket index
-    /// @return endBucket Last bucket index (inclusive)
-    function _rangeToBuckets(uint256 lower, uint256 upper) 
-        internal view returns (uint256 startBucket, uint256 endBucket) 
+    /// @return startBucket First bucket index (absolute)
+    /// @return endBucket Last bucket index (inclusive, absolute)
+    function _rangeToBuckets(uint256 lower, uint256 upper)
+        internal view returns (uint256 startBucket, uint256 endBucket)
     {
         if (lower >= upper) revert InvalidRange();
         if (bucketWidth == 0) revert InvalidParameters();
-        if (lower < marketMin) revert InvalidRange();
-        if (upper > marketMax) revert InvalidRange();
-        
-        // Market-relative indexing
-        startBucket = (lower - marketMin) / bucketWidth;
-        endBucket = ((upper - 1) - marketMin) / bucketWidth; // -1 makes upper exclusive
+
+        // Absolute indexing: bucketId = value / bucketWidth
+        startBucket = lower / bucketWidth;
+        endBucket = (upper - 1) / bucketWidth;
+
+        if (endBucket > maxBucketId) revert InvalidRange();
 
         // Enforce max range width if configured
         if (maxRangeWidth > 0 && (endBucket - startBucket + 1) > maxRangeWidth) {
@@ -1172,8 +1107,8 @@ contract LMSRMarket is ReentrancyGuard {
     function _scanMaxLiability(bool checkSolvency) internal {
         uint256 currentMax = 0;
         uint256 maxBucket = 0;
-        for (uint256 i = 0; i < bucketCount; i++) {
-            if (maxBucketCount > 0 && !_isBucketActive(i)) continue;
+        for (uint256 i = 0; i <= maxBucketId; i++) {
+            if (!_isBucketActive(i)) continue;
             if (checkSolvency && buckets[i].shares > poolBalance + SOLVENCY_DUST) {
                 revert SolvencyViolation();
             }
@@ -1229,20 +1164,10 @@ contract LMSRMarket is ReentrancyGuard {
     function resolveMarket(uint256 _resolutionValue) external {
         if (msg.sender != resolver) revert Unauthorized();
         if (status != MarketStatus.ACTIVE) revert MarketAlreadyResolved();
-        
-        // Validate resolution value is within market bounds
-        if (_resolutionValue < marketMin || _resolutionValue > marketMax) {
-            revert InvalidResolutionValue();
-        }
-        
-        // Calculate winning bucket from resolution value (same as Sui)
-        // bucket_index = (value - marketMin) / bucketWidth
-        uint256 calculatedBucket = (_resolutionValue - marketMin) / bucketWidth;
-        
-        // Handle edge case: if value equals marketMax, it belongs to the last bucket
-        if (calculatedBucket >= bucketCount) {
-            calculatedBucket = bucketCount - 1;
-        }
+
+        // Absolute bucket indexing: bucketId = value / bucketWidth
+        uint256 calculatedBucket = _resolutionValue / bucketWidth;
+        if (calculatedBucket > maxBucketId) revert InvalidResolutionValue();
 
         status = MarketStatus.RESOLVED;
         resolutionValue = _resolutionValue;
@@ -1332,7 +1257,7 @@ contract LMSRMarket is ReentrancyGuard {
 
     /// @dev Activate an inactive bucket on first trade — sets bounds, tree leaf, and increments counter
     function _activateBucket(uint256 bucketId) internal {
-        uint256 lower = marketMin + (bucketId * bucketWidth);
+        uint256 lower = bucketId * bucketWidth;
         uint256 upper = lower + bucketWidth;
 
         buckets[bucketId] = Bucket({
@@ -1347,6 +1272,7 @@ contract LMSRMarket is ReentrancyGuard {
         _tree.setLeaf(uint32(bucketId), phantomExp);
 
         activeBucketCount++;
+        cachedLnBucketCount = activeBucketCount.fromU256().ln();
 
         emit BucketActivated(marketId, bucketId, lower, upper);
     }

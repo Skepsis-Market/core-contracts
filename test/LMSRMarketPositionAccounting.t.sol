@@ -29,16 +29,24 @@ contract LMSRMarketPositionAccountingTest is Test {
         });
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
         positionNFT = new PositionNFT(address(this));
 
-        uint256[] memory bucketRanges = new uint256[](5);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 75;
-        bucketRanges[4] = 100;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, 1000_000000);
 
         market = new LMSRMarket(
             MARKET_ID,
@@ -48,8 +56,10 @@ contract LMSRMarketPositionAccountingTest is Test {
             address(positionNFT),
             500_000000,
             1000_000000,
-            bucketRanges,
-            new uint256[](0),
+            25,        // bucketWidth
+            3,         // maxBucketId
+            seedIds,
+            seedShares,
             50,
             2000,
             _defaultMetadata(),
@@ -61,12 +71,12 @@ contract LMSRMarketPositionAccountingTest is Test {
     }
 
     function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
     }
 
     function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
     }
 
@@ -95,7 +105,7 @@ contract LMSRMarketPositionAccountingTest is Test {
         uint256 shares = _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
 
-        uint256 lower = market.marketMin();
+        uint256 lower = 0;
         uint256 width = market.bucketWidth();
         vm.prank(attacker);
         vm.expectRevert(LMSRMarket.InsufficientBalance.selector);

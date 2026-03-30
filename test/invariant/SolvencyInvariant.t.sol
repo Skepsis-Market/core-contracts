@@ -48,7 +48,7 @@ contract SolvencyHandler is Test {
             usdc.mint(trader, amountUSDC * 2);
         }
 
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
 
         // Try to buy (may revert due to slippage, which is OK)
@@ -86,7 +86,7 @@ contract SolvencyHandler is Test {
         uint256 sharesToSell = (bucketShares * sharePercent) / 100;
         if (sharesToSell == 0) return;
 
-        uint256 lower = market.marketMin() + (bucketId * market.bucketWidth());
+        uint256 lower = bucketId * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
 
         address trader = traders[traderIndex];
@@ -159,11 +159,16 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             traders.push(address(uint160(0x1000 + i)));
         }
         
-        // Deploy market with 10 buckets
-        uint256[] memory bucketRanges = new uint256[](11);
-        for (uint256 i = 0; i <= 10; i++) {
-            bucketRanges[i] = i * 10; // 0, 10, 20, ..., 100
+        // Deploy market with 10 buckets (width=10, IDs 0-9)
+        uint256 numBuckets = 10;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 per = POOL_BALANCE / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = i;
+            seedShares[i] = per;
         }
+        seedShares[numBuckets - 1] += POOL_BALANCE - (per * numBuckets);
         
         vm.prank(creator);
         market = new LMSRMarket(
@@ -174,8 +179,10 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             address(0x2), // positionNFT
             3_333_333333, // alpha = POOL / sqrt(10)
             POOL_BALANCE,
-            bucketRanges,
-            new uint256[](0),
+            10, // bucketWidth
+            9,  // maxBucketId
+            seedIds,
+            seedShares,
             50, // 0.5% fee
             2000, // 20% protocol fee
             _defaultMetadata(),

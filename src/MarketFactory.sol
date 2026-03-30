@@ -20,10 +20,10 @@ contract MarketFactory is Ownable {
         // Core LMSR parameters
         uint256 alpha;             // Creator-specified alpha (6 decimals)
         uint256 seedAmount;        // Initial liquidity from vault (USDC 6 decimals)
-        uint256 minValue;          // Minimum value in market range (Sui parity)
-        uint256 maxValue;          // Maximum value in market range (Sui parity)
-        uint256 bucketCount;       // Number of buckets (Sui parity)
-        uint256[] initialShares;   // Custom distribution (empty = uniform). Must sum to seedAmount.
+        uint256 bucketWidth;       // Value units per bucket (e.g., 1000 for $1K buckets)
+        uint256 maxBucketId;       // Maximum valid bucket ID (tree capacity - 1)
+        uint256[] seededBucketIds; // Absolute bucket IDs to seed with initial shares
+        uint256[] seededShares;    // Shares for each seeded bucket (parallel array, sum = seedAmount)
         // Alpha decay — all zero means no decay (fixed alpha)
         uint256 alphaFinal;        // Decay floor (6 decimals). 0 = no decay
         uint256 decayStart;        // Unix timestamp when decay begins. 0 = block.timestamp
@@ -38,9 +38,6 @@ contract MarketFactory is Ownable {
         uint256 scheduledResolutionTime; // When resolution is expected (0 = unspecified)
         uint256 minBetSize;        // Minimum trade size in USDC (0 = no minimum)
         uint256 maxBucketsPerRange; // Max buckets in a range trade (0 = factory default)
-        // Dynamic range expansion — both zero means no expansion
-        uint256 expandedMinValue;  // Expanded range lower bound (0 = no expansion below)
-        uint256 expandedMaxValue;  // Expanded range upper bound (0 = no expansion above)
     }
 
     // ─────────────────── State ───────────────────────────────────────────────
@@ -211,24 +208,16 @@ contract MarketFactory is Ownable {
         // ── Validate core params ──────────────────────────────────────────────
         if (p.alpha == 0) revert InvalidParameters();
         if (p.seedAmount < minPoolBalance) revert PoolBalanceTooLow();
-        if (p.bucketCount < 2) revert InvalidParameters();
-        if (p.bucketCount > maxBuckets) revert TooManyBuckets();
-        if (p.minValue >= p.maxValue) revert InvalidBucketRanges();
-        // Ensure even bucket widths
-        if ((p.maxValue - p.minValue) % p.bucketCount != 0) revert InvalidBucketRanges();
+        if (p.bucketWidth == 0) revert InvalidParameters();
+        if (p.seededBucketIds.length < 2) revert InvalidParameters();
+        if (p.seededBucketIds.length != p.seededShares.length) revert InvalidBucketRanges();
+        if (p.maxBucketId + 1 > maxBuckets) revert TooManyBuckets();
 
         // Fees come from factory defaults — no per-market override
         uint256 actualFeeBps = defaultFeeBps;
         uint256 actualProtocolFeeBps = defaultProtocolFeeBps;
 
         uint256 marketId = marketCount++;
-
-        // ── Build bucket ranges from minValue, maxValue, bucketCount (Sui parity) ──
-        uint256 bucketWidth = (p.maxValue - p.minValue) / p.bucketCount;
-        uint256[] memory bucketRanges = new uint256[](p.bucketCount + 1);
-        for (uint256 i = 0; i <= p.bucketCount; i++) {
-            bucketRanges[i] = p.minValue + (i * bucketWidth);
-        }
 
         // ── 1. Deploy market (alpha + seed are creator design params) ─────────
         LMSRMarket.MarketMetadata memory metadata = LMSRMarket.MarketMetadata({
@@ -252,8 +241,10 @@ contract MarketFactory is Ownable {
             address(positionNFT),
             p.alpha,           // creator-specified alpha (6 decimals)
             p.seedAmount,
-            bucketRanges,      // computed from minValue, maxValue, bucketCount
-            p.initialShares,   // custom distribution (empty = uniform)
+            p.bucketWidth,
+            p.maxBucketId,
+            p.seededBucketIds,
+            p.seededShares,
             actualFeeBps,
             actualProtocolFeeBps,
             metadata,
@@ -284,23 +275,7 @@ contract MarketFactory is Ownable {
             market.setMaxRangeWidth(rangeWidth);
         }
 
-        // ── 6. Configure dynamic range expansion if requested ────────────────
-        if (p.expandedMinValue != 0 || p.expandedMaxValue != 0) {
-            uint256 expMin = p.expandedMinValue == 0 ? p.minValue : p.expandedMinValue;
-            uint256 expMax = p.expandedMaxValue == 0 ? p.maxValue : p.expandedMaxValue;
-
-            if (expMin > p.minValue) revert InvalidParameters();
-            if (expMax < p.maxValue) revert InvalidParameters();
-            if ((p.minValue - expMin) % bucketWidth != 0) revert InvalidBucketRanges();
-            if ((expMax - p.maxValue) % bucketWidth != 0) revert InvalidBucketRanges();
-
-            uint256 totalExpanded = (expMax - expMin) / bucketWidth;
-            if (totalExpanded > maxBuckets) revert TooManyBuckets();
-
-            market.configureExpansion(expMin, expMax);
-        }
-
-        emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, p.bucketCount);
+        emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, p.seededBucketIds.length);
     }
 
     // ─────────────────── Admin ────────────────────────────────────────────────

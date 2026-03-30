@@ -19,22 +19,30 @@ contract StuckFundsTest is Test {
     uint256 poolBalance = 10_000_000000; // $10K
     uint256 bucketCount = 4;
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
         factory = address(this);
         posNFT = new PositionNFT(factory);
 
-        uint256[] memory ranges = new uint256[](5);
-        ranges[0] = 0;
-        ranges[1] = 25;
-        ranges[2] = 50;
-        ranges[3] = 75;
-        ranges[4] = 100;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, poolBalance);
 
         // feeBps=50 (0.5%), protocolFeeBps=0 (all fees to LP, none to protocol)
         market = new LMSRMarket(
             1, creator, factory, address(usdc), address(posNFT),
-            500_000000, poolBalance, ranges, new uint256[](0), 50, 0,
+            500_000000, poolBalance, 25, 3, seedIds, seedShares, 50, 0,
             LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
             address(0)
         );
@@ -58,7 +66,7 @@ contract StuckFundsTest is Test {
         posNFT.setApprovalForAll(address(market), true);
 
         uint256 buyAmount = 5_000_000000; // $5K
-        uint256 lower = market.marketMin() + (2 * market.bucketWidth());
+        uint256 lower = 2 * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
         uint256 sharesBought = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
         vm.stopPrank();

@@ -38,8 +38,8 @@ contract ResolveScript is Script {
         LMSRMarket market = LMSRMarket(vm.envAddress("MARKET_ADDRESS"));
 
         uint256 n         = market.bucketCount();
-        uint256 minVal    = market.marketMin();
-        uint256 maxVal    = market.marketMax();
+        uint256 minVal    = 0;
+        uint256 maxVal    = (market.maxBucketId() + 1) * market.bucketWidth();
         uint256 bWidth    = market.bucketWidth();
         uint256 pool      = market.poolBalance();
 
@@ -86,7 +86,7 @@ contract ResolveScript is Script {
         );
 
         // Compute the winning bucket (mirrors LMSRMarket.resolveMarket logic)
-        uint256 winBucket = (RESOLUTION_VALUE - minVal) / bWidth;
+        uint256 winBucket = RESOLUTION_VALUE / bWidth;
         if (winBucket >= n) winBucket = n - 1;
 
         (uint256 wbShares,, uint256 wbLower, uint256 wbUpper) = market.buckets(winBucket);

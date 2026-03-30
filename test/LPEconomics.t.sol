@@ -32,22 +32,42 @@ contract LPEconomicsTest is Test {
         }
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function _createMarket(uint256 id, uint256 buckets, uint256 minVal, uint256 maxVal)
         internal returns (LMSRMarket)
     {
-        uint256[] memory ranges = new uint256[](buckets + 1);
         uint256 width = (maxVal - minVal) / buckets;
-        for (uint256 i = 0; i <= buckets; i++) {
-            ranges[i] = minVal + (i * width);
-        }
 
-        // Alpha = pool / sqrt(buckets) - standard heuristic
+        // Seed bucket IDs: minVal/width .. (maxVal/width - 1)
+        uint256 startBucket = minVal / width;
+        uint256 maxBid = (maxVal / width) - 1;
+        uint256[] memory seedIds = new uint256[](buckets);
+        uint256[] memory seedShares = new uint256[](buckets);
+        uint256 per = POOL / buckets;
+        for (uint256 i = 0; i < buckets; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = per;
+        }
+        seedShares[buckets - 1] += POOL - (per * buckets);
+
         uint256 sqrtN = _sqrt(buckets);
         uint256 alpha = POOL / sqrtN;
 
         LMSRMarket m = new LMSRMarket(
             id, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, ranges, new uint256[](0), 100, 0, // 1% fee, 0 protocol
+            alpha, POOL, width, maxBid, seedIds, seedShares, 100, 0,
             LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
             address(0)
         );
@@ -256,9 +276,11 @@ contract LPEconomicsTest is Test {
     }
 
     function _buyAt(LMSRMarket m, address t, uint256 target, uint256 minVal, uint256 width, uint256 buckets, uint256 amount) internal {
-        uint256 bid = (target - minVal) / width;
-        if (bid >= buckets) bid = buckets - 1;
-        uint256 lo = minVal + (bid * width);
+        uint256 bid = target / width;
+        uint256 startBucket = minVal / width;
+        if (bid < startBucket) bid = startBucket;
+        if (bid >= startBucket + buckets) bid = startBucket + buckets - 1;
+        uint256 lo = bid * width;
         vm.startPrank(t);
         usdc.approve(address(m), type(uint256).max);
         m.buySharesRange(lo, lo + width, amount, 0, 0, t);
