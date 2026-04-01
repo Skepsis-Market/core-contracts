@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -77,10 +77,23 @@ contract CustomDistributionTest is Test {
         uint256 alpha = POOL / 7; // ~sqrt(50) ≈ 7
 
         uint256 g0 = gasleft();
-        LMSRMarket market = new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
-        );
+        LMSRMarket market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: shares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
         uint256 g1 = gasleft();
 
         posNFT.authorizeMarket(address(market), 1);
@@ -110,20 +123,46 @@ contract CustomDistributionTest is Test {
         // Uniform
         uint256 g0 = gasleft();
         (uint256[] memory uIds, uint256[] memory uShares) = _uniformSeedsCD();
-        LMSRMarket uniform = new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, uIds, uShares, 50, 0, _meta(), address(0)
-        );
+        LMSRMarket uniform = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: uIds,
+                seededShares: uShares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
         uint256 g1 = gasleft();
         uint256 uniformGas = g0 - g1;
 
         // Custom
         uint256[] memory shares = _bellCurveShares();
         g0 = gasleft();
-        LMSRMarket custom = new LMSRMarket(
-            2, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
-        );
+        LMSRMarket custom = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 2,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: shares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
         g1 = gasleft();
         uint256 customGas = g0 - g1;
 
@@ -142,10 +181,23 @@ contract CustomDistributionTest is Test {
         // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
-        LMSRMarket market = new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
-        );
+        LMSRMarket market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: shares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), POOL);
 
@@ -174,10 +226,23 @@ contract CustomDistributionTest is Test {
         // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
-        LMSRMarket market = new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
-        );
+        LMSRMarket market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: shares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), POOL);
 
@@ -210,10 +275,23 @@ contract CustomDistributionTest is Test {
         // ranges no longer needed with absolute bucket indexing
         uint256 alpha = POOL / 7;
 
-        LMSRMarket market = new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, _createSeedIds(), shares, 50, 0, _meta(), address(0)
-        );
+        LMSRMarket market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: shares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), POOL);
 
@@ -269,10 +347,23 @@ contract CustomDistributionTest is Test {
         uint256 alpha = POOL / 7;
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, 1000, 129, _createSeedIds(), badShares, 50, 0, _meta(), address(0)
-        );
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: badShares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
     }
 
     function test_customDist_revertIfZeroBucket() public {
@@ -280,10 +371,23 @@ contract CustomDistributionTest is Test {
         badShares[0] = 0; // zero bucket
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            POOL / 7, POOL, 1000, 129, _createSeedIds(), badShares, 50, 0, _meta(), address(0)
-        );
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: POOL / 7,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: _createSeedIds(),
+                seededShares: badShares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
     }
 
     function test_customDist_revertIfWrongLength() public {
@@ -291,9 +395,22 @@ contract CustomDistributionTest is Test {
         uint256[] memory badShares = new uint256[](11); // wrong length vs ids
 
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            POOL / 7, POOL, 1000, 129, badIds, badShares, 50, 0, _meta(), address(0)
-        );
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: POOL / 7,
+                poolBalance: POOL,
+                bucketWidth: 1000,
+                maxBucketId: 129,
+                seededBucketIds: badIds,
+                seededShares: badShares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: _meta(),
+                protocolFeeCollector: address(0)
+            }));
     }
 }

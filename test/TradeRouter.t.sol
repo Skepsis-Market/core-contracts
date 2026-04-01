@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {TradeRouter} from "../src/TradeRouter.sol";
@@ -50,12 +50,23 @@ contract TradeRouterTest is Test {
 
         (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, poolBalance);
 
-        market = new LMSRMarket(
-            marketId, creator, factory, address(usdc), address(posNFT),
-            500_000000, poolBalance, 25, 3, seedIds, seedShares, 50, 2000,
-            LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: marketId,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: 500_000000,
+                poolBalance: poolBalance,
+                bucketWidth: 25,
+                maxBucketId: 3,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         posNFT.authorizeMarket(address(market), marketId);
         mockFactory.setValid(address(market));

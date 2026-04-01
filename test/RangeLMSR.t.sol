@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -51,23 +51,34 @@ contract RangeLMSRTest is Test {
         vm.startPrank(creator);
         usdc.approve(address(this), POOL);
         
-        market = new LMSRMarket(
-            1,              // marketId
-            creator,        // creator
-            factory,        // factory
-            address(usdc),  // usdcToken
-            address(0),     // positionNFT (not used yet)
-            1_000_000000,   // alpha = POOL / sqrt(100)
-            POOL,           // poolBalance
-            bw,             // bucketWidth
-            maxBid,         // maxBucketId
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: // marketId
+            creator,
+                factory: // creator
+            factory,
+                usdcToken: // factory
+            address(usdc),
+                positionNFT: // usdcToken
+            address(0),
+                alpha: // positionNFT (not used yet)
+            1_000_000000,
+                poolBalance: // alpha = POOL / sqrt(100)
+            POOL,
+                bucketWidth: // poolBalance
+            bw,
+                maxBucketId: // bucketWidth
+            maxBid,
+                seededBucketIds: // maxBucketId
             seedIds,
-            seedShares,
-            50,             // feeBps (0.5%)
-            2000,           // protocolFeeBps (20% of fees)
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: // feeBps (0.5%)
+            2000,
+                metadata: // protocolFeeBps (20% of fees)
             _defaultMetadata(),
-            address(0xFEE)
-        );
+                protocolFeeCollector: address(0xFEE)
+            }));
         
         usdc.transfer(address(market), POOL);
         vm.stopPrank();
@@ -193,10 +204,23 @@ contract RangeLMSRTest is Test {
         usdc.mint(creator, POOL * 2);
         vm.startPrank(creator);
         
-        LMSRMarket marketRange = new LMSRMarket(
-            2, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, bw2, maxBid2, sIds, sSh, 50, 2000, _defaultMetadata(), address(0xFEE)
-        );
+        LMSRMarket marketRange = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 2,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 1_000_000000,
+                poolBalance: POOL,
+                bucketWidth: bw2,
+                maxBucketId: maxBid2,
+                seededBucketIds: sIds,
+                seededShares: sSh,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
         usdc.transfer(address(marketRange), POOL);
         
         // Need fresh arrays for second market
@@ -208,10 +232,23 @@ contract RangeLMSRTest is Test {
         }
         sSh2[BUCKET_COUNT - 1] += POOL - (pp * BUCKET_COUNT);
         
-        LMSRMarket marketSingle = new LMSRMarket(
-            3, creator, factory, address(usdc), address(0),
-            1_000_000000, POOL, bw2, maxBid2, sIds2, sSh2, 50, 2000, _defaultMetadata(), address(0xFEE)
-        );
+        LMSRMarket marketSingle = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 3,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 1_000_000000,
+                poolBalance: POOL,
+                bucketWidth: bw2,
+                maxBucketId: maxBid2,
+                seededBucketIds: sIds2,
+                seededShares: sSh2,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
         usdc.transfer(address(marketSingle), POOL);
         vm.stopPrank();
         

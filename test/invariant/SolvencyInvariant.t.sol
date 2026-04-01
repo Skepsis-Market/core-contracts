@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -171,23 +171,31 @@ contract SolvencyInvariantTest is StdInvariant, Test {
         seedShares[numBuckets - 1] += POOL_BALANCE - (per * numBuckets);
         
         vm.prank(creator);
-        market = new LMSRMarket(
-            1, // marketId
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: // marketId
             creator,
-            address(0xFACE), // factory
+                factory: address(0xFACE),
+                usdcToken: // factory
             address(usdc),
-            address(0x2), // positionNFT
-            3_333_333333, // alpha = POOL / sqrt(10)
+                positionNFT: address(0x2),
+                alpha: // positionNFT
+            3_333_333333,
+                poolBalance: // alpha = POOL / sqrt(10)
             POOL_BALANCE,
-            10, // bucketWidth
-            9,  // maxBucketId
+                bucketWidth: 10,
+                maxBucketId: // bucketWidth
+            9,
+                seededBucketIds: // maxBucketId
             seedIds,
-            seedShares,
-            50, // 0.5% fee
-            2000, // 20% protocol fee
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: // 0.5% fee
+            2000,
+                metadata: // 20% protocol fee
             _defaultMetadata(),
-            address(0xFEE)
-        );
+                protocolFeeCollector: address(0xFEE)
+            }));
         
         // Mint initial pool balance to market
         usdc.mint(address(market), POOL_BALANCE);

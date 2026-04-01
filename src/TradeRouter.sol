@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {IUSDC} from "./interfaces/IUSDC.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
@@ -8,6 +8,7 @@ import {IPositionNFT} from "./interfaces/IPositionNFT.sol";
 import {LMSRMarket} from "./LMSRMarket.sol";
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
 
 interface IMarketFactory {
     function isValidMarket(address) external view returns (bool);
@@ -18,7 +19,7 @@ interface IMarketFactory {
 ///      1. USDC.approve(router, type(uint256).max) — for buys
 ///      2. positionNFT.setApprovalForAll(router, true) — for sells/claims
 ///      Router never retains funds or positions between transactions.
-contract TradeRouter is Ownable, Pausable {
+contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IUSDC public immutable usdc;
@@ -53,6 +54,8 @@ contract TradeRouter is Ownable, Pausable {
         uint256 payoutUSDC
     );
 
+    event MaxBuyAmountUpdated(uint256 oldValue, uint256 newValue);
+
     error ZeroAmount();
     error BuyExceedsLimit();
     error InvalidMarket();
@@ -69,7 +72,9 @@ contract TradeRouter is Ownable, Pausable {
     }
 
     function setMaxBuyAmount(uint256 _maxBuyAmount) external onlyOwner {
+        uint256 oldValue = maxBuyAmount;
         maxBuyAmount = _maxBuyAmount;
+        emit MaxBuyAmountUpdated(oldValue, _maxBuyAmount);
     }
 
     function pause() external onlyOwner { _pause(); }
@@ -87,7 +92,7 @@ contract TradeRouter is Ownable, Pausable {
         uint256 amountUSDC,
         uint256 minSharesOut,
         uint256 targetShares
-    ) external whenNotPaused onlyValidMarket(market) returns (uint256 shares) {
+    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 shares) {
         if (amountUSDC == 0) revert ZeroAmount();
         if (maxBuyAmount > 0 && amountUSDC > maxBuyAmount) revert BuyExceedsLimit();
         IERC20(address(usdc)).safeTransferFrom(msg.sender, address(this), amountUSDC);
@@ -110,7 +115,7 @@ contract TradeRouter is Ownable, Pausable {
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external whenNotPaused onlyValidMarket(market) returns (uint256 shares) {
+    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 shares) {
         if (amountUSDC == 0) revert ZeroAmount();
         if (maxBuyAmount > 0 && amountUSDC > maxBuyAmount) revert BuyExceedsLimit();
         usdc.permit(msg.sender, address(this), amountUSDC, deadline, v, r, s);
@@ -134,7 +139,7 @@ contract TradeRouter is Ownable, Pausable {
         uint256 rangeUpper,
         uint256 sharesToSell,
         uint256 minUsdcOut
-    ) external whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
+    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
         if (sharesToSell == 0) revert ZeroAmount();
 
         // Compute tokenId for this range (absolute bucket indexing)
@@ -163,7 +168,7 @@ contract TradeRouter is Ownable, Pausable {
     function claim(
         LMSRMarket market,
         uint256 tokenId
-    ) external whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
+    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
         // Pull all NFTs from user
         uint256 balance = positionNFT.balanceOf(msg.sender, tokenId);
         if (balance == 0) revert ZeroAmount();

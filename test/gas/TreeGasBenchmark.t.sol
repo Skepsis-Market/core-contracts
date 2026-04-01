@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../../src/LMSRMarket.sol";
@@ -44,10 +44,23 @@ contract TreeGasBenchmarkTest is Test {
         });
 
         vm.prank(creator);
-        LMSRMarket market = new LMSRMarket(
-            1, creator, address(this), address(usdc), address(0),
-            ALPHA, POOL, 1_000, maxBid, seedIds, seedShares, 50, 2000, meta, address(0xFEE)
-        );
+        LMSRMarket market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: address(this),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: ALPHA,
+                poolBalance: POOL,
+                bucketWidth: 1_000,
+                maxBucketId: maxBid,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: meta,
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         // Fund trader
         usdc.mint(trader, 100_000_000000);

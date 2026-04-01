@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/utils/Pausable.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {LMSRMarket} from "./LMSRMarket.sol";
 
@@ -37,7 +38,7 @@ import {LMSRMarket} from "./LMSRMarket.sol";
 ///  Layer 1 – market-level  : each market enforces its own P-Z invariant (LMSRMarket.sol)
 ///  Layer 2 – vault-level   : 20% buffer on DEPLOYED capital (not idle)
 ///  Layer 3 – per-market cap: no single new deployment > 20% of totalAssets at time of call
-contract Vault is ERC4626, Ownable {
+contract Vault is ERC4626, Ownable, Pausable {
     using SafeERC20 for IERC20;
 
     // ─── Constants ────────────────────────────────────────────────────────────
@@ -78,6 +79,9 @@ contract Vault is ERC4626, Ownable {
     // ─── Withdrawal Queue Counter (O(1) pendingWithdrawalsCount) ───────────
     uint256 public pendingCount;                        // unfulfilled queue entries
 
+    // ─── Deposit Gate ─────────────────────────────────────────────────────────
+    bool public depositsEnabled;            // false = only owner can deposit (capped launch)
+
     // ─── Events ───────────────────────────────────────────────────────────────
     event MarketRegistered(address indexed market);
     event CapitalDeployed(address indexed market, uint256 amount);
@@ -87,6 +91,8 @@ contract Vault is ERC4626, Ownable {
     event WithdrawalRequested(address indexed owner, uint256 indexed queueIndex, uint256 sharesBurned, uint256 assetsOwed);
     event WithdrawalFulfilled(uint256 indexed queueIndex, uint256 assetsOwed);
     event WithdrawalClaimed(address indexed owner, uint256 indexed queueIndex, uint256 assets);
+    event DepositsEnabledUpdated(bool enabled);
+    event FactoryUpdated(address indexed oldFactory, address indexed newFactory);
 
     // ─── Errors ───────────────────────────────────────────────────────────────
     error MarketAlreadyRegistered();
@@ -101,6 +107,7 @@ contract Vault is ERC4626, Ownable {
     error WithdrawalNotFulfilled();
     error WithdrawalAlreadyClaimed();
     error InsufficientShares();
+    error DepositsDisabled();
 
     // ─── Constructor ──────────────────────────────────────────────────────────
     constructor(
@@ -157,19 +164,54 @@ contract Vault is ERC4626, Ownable {
         return previewWithdraw(maxWithdraw(owner));
     }
 
-    // Deposits stay liquid in the vault; admin deploys capital separately via deployTo().
-    // No _deposit override needed — standard ERC-4626 behaviour is correct.
+    /// @notice Returns 0 when paused or deposits disabled (unless caller is owner).
+    function maxDeposit(address receiver) public view override returns (uint256) {
+        if (paused()) return 0;
+        if (!depositsEnabled && receiver != owner()) return 0;
+        return type(uint256).max;
+    }
 
-    /// @notice Withdrawals only from liquid USDC above the 20% buffer.
+    /// @notice Returns 0 when paused or deposits disabled (unless caller is owner).
+    function maxMint(address receiver) public view override returns (uint256) {
+        if (paused()) return 0;
+        if (!depositsEnabled && receiver != owner()) return 0;
+        return type(uint256).max;
+    }
+
+    /// @notice Deposit gate — blocked when paused or deposits disabled (unless owner).
+    function _deposit(
+        address caller,
+        address receiver,
+        uint256 assets,
+        uint256 shares
+    ) internal override whenNotPaused {
+        if (!depositsEnabled && caller != owner()) revert DepositsDisabled();
+        super._deposit(caller, receiver, assets, shares);
+    }
+
+    /// @notice Withdrawals only from liquid USDC above the 20% buffer. Blocked when paused.
     function _withdraw(
         address caller,
         address receiver,
-        address owner,
+        address owner_,
         uint256 assets,
         uint256 shares
-    ) internal override {
+    ) internal override whenNotPaused {
         if (assets > liquidAvailable()) revert InsufficientLiquidBuffer();
-        super._withdraw(caller, receiver, owner, assets, shares);
+        super._withdraw(caller, receiver, owner_, assets, shares);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADMIN: PAUSE + DEPOSIT GATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+
+    /// @notice Enable/disable public deposits. When disabled, only owner can deposit.
+    function setDepositsEnabled(bool _enabled) external onlyOwner {
+        depositsEnabled = _enabled;
+        emit DepositsEnabledUpdated(_enabled);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -188,7 +230,9 @@ contract Vault is ERC4626, Ownable {
 
     /// @notice Set the factory that can call fundNewMarket
     function setFactory(address _factory) external onlyOwner {
+        address oldFactory = factory;
         factory = _factory;
+        emit FactoryUpdated(oldFactory, _factory);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -521,9 +565,10 @@ contract Vault is ERC4626, Ownable {
         }
 
         if (s == LMSRMarket.MarketStatus.RESOLVED && !m.lpWithdrawn()) {
-            (uint256 winShares, , , ) = m.buckets(m.winningBucket());
+            (uint256 winShares, uint256 initShares, , ) = m.buckets(m.winningBucket());
+            uint256 traderShares = winShares > initShares ? winShares - initShares : 0;
             uint256 pool = m.poolBalance();
-            return pool > winShares ? pool - winShares : 0;
+            return pool > traderShares ? pool - traderShares : 0;
         }
 
         return 0;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
@@ -67,23 +67,27 @@ contract BenchmarkTwoBucketDecayTest is Test {
 
         (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, INITIAL_LIQUIDITY);
 
-        market = new LMSRMarket(
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 10_000_000000,
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
             1,
-            creator,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            10_000_000000,
-            INITIAL_LIQUIDITY,
-            1,         // bucketWidth
-            1,         // maxBucketId
+                seededBucketIds: // maxBucketId
             seedIds,
-            seedShares,
-            0, // feeBps = 0 for pure math benchmark
-            0,  // protocolFeeBps = 0
+                seededShares: seedShares,
+                feeBps: 0,
+                protocolFeeBps: // feeBps = 0 for pure math benchmark
+            0,
+                metadata: // protocolFeeBps = 0
             _defaultMetadata(),
-            address(0xFEE)
-        );
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         // Seed initial liquidity
         usdc.mint(address(market), INITIAL_LIQUIDITY);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -166,23 +166,25 @@ contract AlphaDecayLPLossInvariantTest is StdInvariant, Test {
         }
         seedShares[numBuckets - 1] += INITIAL_LIQUIDITY - (per * numBuckets);
 
-        market = new LMSRMarket(
-            91001,
-            CREATOR,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            3_333_333333,
-            INITIAL_LIQUIDITY,
-            1,         // bucketWidth
-            9,         // maxBucketId
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 91001,
+                creator: CREATOR,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 3_333_333333,
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
+            9,
+                seededBucketIds: // maxBucketId
             seedIds,
-            seedShares,
-            0,
-            0,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+                seededShares: seedShares,
+                feeBps: 0,
+                protocolFeeBps: 0,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);
 

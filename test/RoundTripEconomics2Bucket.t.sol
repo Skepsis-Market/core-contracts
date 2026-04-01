@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
@@ -61,23 +61,25 @@ contract RoundTripEconomics2BucketTest is Test {
 
         (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, INITIAL_LIQUIDITY);
 
-        market = new LMSRMarket(
-            7001,
-            CREATOR,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            10_000_000000,
-            INITIAL_LIQUIDITY,
-            1,         // bucketWidth
-            1,         // maxBucketId
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 7001,
+                creator: CREATOR,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 10_000_000000,
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
+            1,
+                seededBucketIds: // maxBucketId
             seedIds,
-            seedShares,
-            FEE_BPS,
-            PROTOCOL_FEE_BPS,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+                seededShares: seedShares,
+                feeBps: FEE_BPS,
+                protocolFeeBps: PROTOCOL_FEE_BPS,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);
         usdc.mint(TRADER, STARTING_TRADER_USDC);

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {UD60x18, ud, unwrap, convert} from "@prb/math/UD60x18.sol";
-import {SD59x18, sd, intoUD60x18} from "@prb/math/SD59x18.sol";
 
 /// @notice Fixed-point math library for LMSR with USDC decimal conversions
 library FixedPointMath {

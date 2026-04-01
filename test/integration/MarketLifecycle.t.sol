@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {MarketFactory} from "../../src/MarketFactory.sol";
@@ -38,10 +38,23 @@ contract MarketLifecycleTest is Test {
             implSeedIds[0] = 0; implSeedIds[1] = 1;
             implSeedShares[0] = 1; implSeedShares[1] = 1;
             LMSRMarket.MarketMetadata memory implMeta;
-            address lmsrImpl = address(new LMSRMarket(
-                0, address(0), address(0), address(usdc), address(0),
-                1, 2, 1, 1, implSeedIds, implSeedShares, 0, 0, implMeta, address(0xFEE)
-            ));
+            address lmsrImpl = address(new LMSRMarket(LMSRMarket.InitParams({
+                    marketId: 0,
+                    creator: address(0),
+                    factory: address(0),
+                    usdcToken: address(usdc),
+                    positionNFT: address(0),
+                    alpha: 1,
+                    poolBalance: 2,
+                    bucketWidth: 1,
+                    maxBucketId: 1,
+                    seededBucketIds: implSeedIds,
+                    seededShares: implSeedShares,
+                    feeBps: 0,
+                    protocolFeeBps: 0,
+                    metadata: implMeta,
+                    protocolFeeCollector: address(0xFEE)
+                })));
 
             // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
             address predictedFactory = vm.computeCreateAddress(admin, 3);
@@ -70,6 +83,7 @@ contract MarketLifecycleTest is Test {
 
         // Deploy vault and wire up
         vault = new Vault(address(usdc), "Vault", "sVLT", admin);
+        vault.setDepositsEnabled(true);
         factory.setVault(address(vault));
         vault.setFactory(address(factory));
 

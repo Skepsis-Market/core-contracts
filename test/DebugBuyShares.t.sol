@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -48,23 +48,23 @@ contract DebugBuySharesTest is Test {
         }
         seedShares[numBuckets - 1] += POOL_BALANCE - (perBucket * numBuckets);
         
-        market = new LMSRMarket(
-            1,
-            creator,
-            factory,
-            address(usdc),
-            positionNFT,
-            1_000_000000,
-            POOL_BALANCE,
-            bw,
-            maxBid,
-            seedIds,
-            seedShares,
-            50,
-            2000,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: 1_000_000000,
+                poolBalance: POOL_BALANCE,
+                bucketWidth: bw,
+                maxBucketId: maxBid,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
         
         usdc.mint(address(market), POOL_BALANCE);
         usdc.mint(trader, 100_000000);

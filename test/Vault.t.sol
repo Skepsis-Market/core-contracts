@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -49,6 +49,7 @@ contract VaultTest is Test {
 
         // Register markets and point them at vault
         vm.startPrank(admin);
+        vault.setDepositsEnabled(true);
         vault.registerMarket(address(market1));
         vault.registerMarket(address(market2));
         vm.stopPrank();
@@ -81,10 +82,23 @@ contract VaultTest is Test {
     {
         uint256 _alpha = seed / _isqrt(numBuckets);
         (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(numBuckets, seed);
-        m = new LMSRMarket(
-            id, creator, address(0xFACE), address(usdc), address(0),
-            _alpha, seed, bw, numBuckets - 1, seedIds, seedShares, 100, 2000, _defaultMetadata(), address(0xFEE)
-        );
+        m = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: id,
+                creator: creator,
+                factory: address(0xFACE),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: _alpha,
+                poolBalance: seed,
+                bucketWidth: bw,
+                maxBucketId: numBuckets - 1,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 100,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
         usdc.mint(address(m), seed);
     }
 
@@ -472,12 +486,10 @@ contract VaultTest is Test {
 
         vault.harvestResolved(address(market1));
 
-        // After harvest: market cache zeroed, vault liquid increased by LP residual
-        // With new accounting, LP recovers initial shares from winning bucket,
-        // so harvested amount exceeds the cached value by initialShares of winning bucket.
-        // totalAssets increases by that initialShares amount.
-        (, uint256 winInitShares,,) = market1.buckets(market1.winningBucket());
-        assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest + winInitShares, 2, "totalAssets increases by recovered initial shares after harvest");
+        // After harvest: market cache zeroed, vault liquid increased by LP residual.
+        // _claimableFromMarket already accounted for initial shares recovery,
+        // so totalAssets should remain approximately unchanged after harvest.
+        assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest, 2, "totalAssets stable after harvest (cache already included initial shares)");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

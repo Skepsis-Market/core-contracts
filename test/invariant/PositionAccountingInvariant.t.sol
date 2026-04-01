@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -97,23 +97,25 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
         }
         seedShares[numBuckets - 1] += pool - (per * numBuckets);
 
-        market = new LMSRMarket(
-            1,
-            creator,
-            address(this),
-            address(usdc),
-            address(positionNFT),
-            5_000_000000,
-            pool,
-            20,        // bucketWidth
-            4,         // maxBucketId
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: address(this),
+                usdcToken: address(usdc),
+                positionNFT: address(positionNFT),
+                alpha: 5_000_000000,
+                poolBalance: pool,
+                bucketWidth: 20,
+                maxBucketId: // bucketWidth
+            4,
+                seededBucketIds: // maxBucketId
             seedIds,
-            seedShares,
-            50,
-            2000,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         positionNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), 10000_000000);

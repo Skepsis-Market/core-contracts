@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {LMSRMarket} from "./LMSRMarket.sol";
 import {PositionNFT} from "./PositionNFT.sol";
@@ -107,6 +107,8 @@ contract MarketFactory is Ownable {
     event DefaultMaxBucketsPerRangeUpdated(uint256 oldValue, uint256 newValue);
     event MarketPaused(uint256 indexed marketId, address indexed marketAddress);
     event MarketUnpaused(uint256 indexed marketId, address indexed marketAddress);
+    event RouterUpdated(address indexed oldRouter, address indexed newRouter);
+    event VaultUpdated(address indexed oldVault, address indexed newVault);
 
     // ─────────────────── Errors ──────────────────────────────────────────────
 
@@ -172,11 +174,15 @@ contract MarketFactory is Ownable {
     /// @notice Set the platform vault that funds all markets
     function setVault(address _vault) external onlyOwner {
         if (_vault == address(0)) revert InvalidParameters();
+        address oldVault = address(vault);
         vault = Vault(_vault);
+        emit VaultUpdated(oldVault, _vault);
     }
 
     function setRouter(address _router) external onlyOwner {
+        address oldRouter = router;
         router = _router;
+        emit RouterUpdated(oldRouter, _router);
     }
 
     /// @notice Update router on an existing market (for upgrades)
@@ -233,23 +239,23 @@ contract MarketFactory is Ownable {
 
         marketAddress = Clones.clone(implementation);
         LMSRMarket market = LMSRMarket(marketAddress);
-        market.initialize(
-            marketId,
-            msg.sender,        // creator
-            address(this),     // factory
-            address(usdcToken),
-            address(positionNFT),
-            p.alpha,           // creator-specified alpha (6 decimals)
-            p.seedAmount,
-            p.bucketWidth,
-            p.maxBucketId,
-            p.seededBucketIds,
-            p.seededShares,
-            actualFeeBps,
-            actualProtocolFeeBps,
-            metadata,
-            protocolFeeCollector
-        );
+        market.initialize(LMSRMarket.InitParams({
+            marketId: marketId,
+            creator: msg.sender,
+            factory: address(this),
+            usdcToken: address(usdcToken),
+            positionNFT: address(positionNFT),
+            alpha: p.alpha,
+            poolBalance: p.seedAmount,
+            bucketWidth: p.bucketWidth,
+            maxBucketId: p.maxBucketId,
+            seededBucketIds: p.seededBucketIds,
+            seededShares: p.seededShares,
+            feeBps: actualFeeBps,
+            protocolFeeBps: actualProtocolFeeBps,
+            metadata: metadata,
+            protocolFeeCollector: protocolFeeCollector
+        }));
 
         // ── 2. Register + authorize ───────────────────────────────────────────
         isValidMarket[marketAddress] = true;

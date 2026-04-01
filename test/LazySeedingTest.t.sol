@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -60,12 +60,23 @@ contract LazySeedingTest is Test {
         uint256 sqrtN = _sqrt(20); // use sqrt(20) for both to match alpha
         uint256 alpha = POOL / sqrtN;
 
-        LMSRMarket m = new LMSRMarket(
-            id, creator, factory, address(usdc), address(posNFT),
-            alpha, POOL, bw, maxBid, seedIds, seedShares, 100, 0,
-            LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
-            address(0)
-        );
+        LMSRMarket m = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: id,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: alpha,
+                poolBalance: POOL,
+                bucketWidth: bw,
+                maxBucketId: maxBid,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 100,
+                protocolFeeBps: 0,
+                metadata: LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
+                protocolFeeCollector: address(0)
+            }));
         posNFT.authorizeMarket(address(m), id);
         usdc.mint(address(m), POOL);
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -40,12 +40,23 @@ contract StuckFundsTest is Test {
         (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, poolBalance);
 
         // feeBps=50 (0.5%), protocolFeeBps=0 (all fees to LP, none to protocol)
-        market = new LMSRMarket(
-            1, creator, factory, address(usdc), address(posNFT),
-            500_000000, poolBalance, 25, 3, seedIds, seedShares, 50, 0,
-            LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
-            address(0)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: address(posNFT),
+                alpha: 500_000000,
+                poolBalance: poolBalance,
+                bucketWidth: 25,
+                maxBucketId: 3,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 0,
+                metadata: LMSRMarket.MarketMetadata("", "", "", "", creator, 0, 0, 0),
+                protocolFeeCollector: address(0)
+            }));
 
         posNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), poolBalance);

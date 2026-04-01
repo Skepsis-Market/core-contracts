@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {FixedPointMath} from "./FixedPointMath.sol";
 import {Math} from "@openzeppelin/utils/math/Math.sol";
@@ -78,20 +78,6 @@ library LMSRCost {
         // (deltaShares * WAD) / alpha → WAD-scaled ratio
         uint256 ratio = (deltaShares * WAD) / alpha;
         factor = ratio.exp();
-    }
-
-    /// @notice Convert multiplicative factor back to shares
-    /// @dev shares = α × ln(factor)
-    /// @param factor Multiplicative factor (WAD)
-    /// @param alpha Liquidity parameter (6 decimals)
-    /// @return shares Share delta per bucket (6 decimals)
-    function factorToShares(
-        uint256 factor,
-        uint256 alpha
-    ) internal pure returns (uint256 shares) {
-        if (factor <= WAD) return 0; // Factor ≤ 1.0 means no shares added
-        uint256 lnFactor = factor.ln(); // WAD
-        shares = (alpha * lnFactor) / WAD; // 6 dec
     }
 
     /// @notice Inverse factor for sells: exp(-deltaShares / alpha) = 1 / exp(deltaShares / alpha)

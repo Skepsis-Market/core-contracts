@@ -26,22 +26,22 @@ contract DeployLifecycleScript is Script {
         implSeedShares[0] = 1; implSeedShares[1] = 1;
         LMSRMarket.MarketMetadata memory implMeta;
         address lmsrImpl = address(new LMSRMarket(LMSRMarket.InitParams({
-                marketId: 0,
-                creator: address(0),
-                factory: address(0),
-                usdcToken: address(usdc),
-                positionNFT: address(0),
-                alpha: 1,
-                poolBalance: 2,
-                bucketWidth: 1,
-                maxBucketId: 1,
-                seededBucketIds: implSeedIds,
-                seededShares: implSeedShares,
-                feeBps: 0,
-                protocolFeeBps: 0,
-                metadata: implMeta,
-                protocolFeeCollector: address(0xFEE)
-            })));
+            marketId: 0,
+            creator: address(0),
+            factory: address(0),
+            usdcToken: address(usdc),
+            positionNFT: address(0),
+            alpha: 1,
+            poolBalance: 2,
+            bucketWidth: 1,
+            maxBucketId: 1,
+            seededBucketIds: implSeedIds,
+            seededShares: implSeedShares,
+            feeBps: 0,
+            protocolFeeBps: 0,
+            metadata: implMeta,
+            protocolFeeCollector: address(0xFEE)
+                })));
 
         // 3. PositionNFT (needs predicted factory address)
         address predictedFactory = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
