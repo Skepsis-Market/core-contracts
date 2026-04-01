@@ -346,10 +346,9 @@ contract LMSRMarket is ReentrancyGuard {
     }
 
     function getWithdrawableSurplus() public view returns (uint256) {
-        uint256 currentBalance = usdcToken.balanceOf(address(this));
         uint256 requiredReserves = getRequiredReserves();
-        if (currentBalance <= requiredReserves) return 0;
-        return currentBalance - requiredReserves;
+        if (poolBalance <= requiredReserves) return 0;
+        return poolBalance - requiredReserves;
     }
 
     function isAlphaDecayConfigured() internal view returns (bool) {
@@ -434,6 +433,7 @@ contract LMSRMarket is ReentrancyGuard {
     function setFees(uint256 _feeBps, uint256 _protocolFeeBps) external {
         if (msg.sender != factory) revert Unauthorized();
         if (_feeBps > MAX_FEE_BPS) revert InvalidParameters();
+        if (_protocolFeeBps > 10000) revert InvalidParameters();
         feeBps = _feeBps;
         protocolFeeBps = _protocolFeeBps;
         emit FeesUpdated(marketId, _feeBps, _protocolFeeBps);
@@ -678,17 +678,20 @@ contract LMSRMarket is ReentrancyGuard {
 
         if (shares < minSharesOut) revert InvalidParameters();
 
-        _validateRangeSolvency(startBucket, endBucket, shares, actualCost);
-        _applyRangeBuy(startBucket, endBucket, shares, actualCost);
-
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
+
+        _validateRangeSolvency(startBucket, endBucket, shares, actualCost + lpFee);
+        _applyRangeBuy(startBucket, endBucket, shares, actualCost + lpFee);
+
         feesCollectedLP += lpFee;
         lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
         totalVolume += amountUSDC;
 
-        IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), amountUSDC);
+        // Only pull what's needed: cost + fees (refund unused budget)
+        uint256 totalPull = actualCost + feesUSDC;
+        IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), totalPull);
         _routeProtocolFee(protocolFee);
 
         if (_positionTokenEnabled()) {
@@ -896,22 +899,16 @@ contract LMSRMarket is ReentrancyGuard {
         if (tokenMarketId != marketId) revert InvalidParameters();
         if (winningBucket < rangeLower || winningBucket > rangeUpper) revert RangeNotWinner();
 
-        uint256 balance;
-        if (_positionTokenEnabled()) {
-            balance = IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId);
-        } else {
-            // No NFT — use winning bucket shares as claim amount
-            balance = buckets[winningBucket].shares;
-        }
+        if (!_positionTokenEnabled()) revert InvalidParameters();
+
+        uint256 balance = IPositionNFT(positionNFT).balanceOf(msg.sender, tokenId);
         if (balance == 0) revert InsufficientBalance();
 
         payoutUSDC = balance;
         buckets[winningBucket].shares -= balance;
         poolBalance -= payoutUSDC;
 
-        if (_positionTokenEnabled()) {
-            IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
-        }
+        IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
         IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
     }

@@ -146,7 +146,10 @@ contract RangeLMSRTest is Test {
         console.log("Odds:", (shares * 1e6) / 10_000000, "x");
         
         assertTrue(shares > 0, "Should receive shares");
-        assertEq(traderBalBefore - traderBalAfter, 10_000000, "Should spend $10");
+        // Range buy refunds unused budget — user spends actualCost + fees, not full amountUSDC
+        uint256 spent = traderBalBefore - traderBalAfter;
+        assertTrue(spent <= 10_000000, "Should spend at most $10");
+        assertTrue(spent > 9_000000, "Should spend close to $10");
     }
     
     function test_buySharesRange_affectsAllBucketsInRange() public {

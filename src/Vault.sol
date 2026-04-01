@@ -6,6 +6,7 @@ import {ERC20} from "@openzeppelin/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {LMSRMarket} from "./LMSRMarket.sol";
 
@@ -38,13 +39,15 @@ import {LMSRMarket} from "./LMSRMarket.sol";
 ///  Layer 1 – market-level  : each market enforces its own P-Z invariant (LMSRMarket.sol)
 ///  Layer 2 – vault-level   : 20% buffer on DEPLOYED capital (not idle)
 ///  Layer 3 – per-market cap: no single new deployment > 20% of totalAssets at time of call
-contract Vault is ERC4626, Ownable, Pausable {
+contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ─── Constants ────────────────────────────────────────────────────────────
     uint256 public constant LIQUID_BUFFER_BPS  = 2000; // 20 % always liquid
     uint256 public constant MAX_MARKET_BPS     = 2000; // no new deployment > 20 % of NAV
     uint256 public constant BPS_DENOMINATOR    = 10000;
+
+    uint256 public constant MIN_WITHDRAWAL_REQUEST = 1_000000; // 1 USDC minimum queue request
 
     // Health thresholds (integer ×100, e.g. 120 = 1.20×)
     uint256 public constant HEALTH_INJECT_THRESHOLD   = 120; // inject when below 1.20×
@@ -117,15 +120,23 @@ contract Vault is ERC4626, Ownable, Pausable {
         address _owner
     ) ERC20(_name, _symbol) ERC4626(IERC20(_asset)) Ownable(_owner) {}
 
+    /// @dev Virtual offset of 6 decimals (1e6 virtual shares) prevents first-depositor
+    ///      inflation attack. An attacker would need to donate >1e6 USDC to steal 1 wei.
+    function _decimalsOffset() internal pure override returns (uint8) {
+        return 6;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // ERC-4626 OVERRIDES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice NAV = vault liquid USDC + cached Σ market values.
-    ///         O(1) — uses incrementally-updated cache instead of looping all markets.
-    ///         Call syncMarketValue() to refresh individual market values if needed.
+    /// @notice NAV = (liquid USDC - reserved for queue) + cached Σ market values.
+    ///         Subtracting reservedForWithdrawals prevents share price inflation from
+    ///         USDC already committed to fulfilled withdrawal requests.
     function totalAssets() public view override returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this)) + cachedTotalMarketValue;
+        uint256 liquid = IERC20(asset()).balanceOf(address(this));
+        uint256 available = liquid > reservedForWithdrawals ? liquid - reservedForWithdrawals : 0;
+        return available + cachedTotalMarketValue;
     }
 
     /// @notice Total value currently deployed in active/resolved markets (cached).
@@ -248,9 +259,10 @@ contract Vault is ERC4626, Ownable, Pausable {
     function requestWithdrawal(uint256 shares) external returns (uint256 queueIndex) {
         if (shares == 0) revert InsufficientShares();
         if (balanceOf(msg.sender) < shares) revert InsufficientShares();
-        
+
         // Calculate USDC owed at CURRENT exchange rate (crystallize exit value)
         uint256 assetsOwed = convertToAssets(shares);
+        if (assetsOwed < MIN_WITHDRAWAL_REQUEST) revert InsufficientShares();
         
         // Burn shares immediately - LP stops earning from this point
         _burn(msg.sender, shares);
@@ -410,7 +422,7 @@ contract Vault is ERC4626, Ownable, Pausable {
     ///         withdrawable (above requiredReserves = maxLiability + 2·alpha_current·ln(N)).
     ///         As alpha decays, requiredReserves shrink and this call can return more capital.
     ///         Returned capital is first allocated to queued withdrawal requests (FIFO).
-    function harvestSurplus(address market) external {
+    function harvestSurplus(address market) external nonReentrant {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
         LMSRMarket m = LMSRMarket(market);
@@ -433,7 +445,7 @@ contract Vault is ERC4626, Ownable, Pausable {
     /// @notice Pull LP residual from a resolved market back to the vault.
     ///         Permissionless. Market must be RESOLVED and not yet claimed.
     ///         Returned capital is first allocated to queued withdrawal requests (FIFO).
-    function harvestResolved(address market) external {
+    function harvestResolved(address market) external nonReentrant {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
         LMSRMarket m = LMSRMarket(market);

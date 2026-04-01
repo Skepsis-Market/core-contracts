@@ -136,8 +136,8 @@ contract VaultTest is Test {
         uint256 amount = 5_000_000000;
         _lpDeposit(lp1, amount);
 
-        // First deposit: shares == assets (both in 6 dec, ERC4626 standard)
-        assertEq(vault.balanceOf(lp1), amount, "first LP shares should equal deposit");
+        // With _decimalsOffset(6), shares = assets * 1e6 for first depositor (virtual offset)
+        assertEq(vault.balanceOf(lp1), amount * 1e6, "first LP shares = deposit * 1e6 (decimals offset)");
         assertEq(vault.totalAssets(), amount, "totalAssets = vault liquid (no deployments yet)");
     }
 
