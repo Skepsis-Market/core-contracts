@@ -512,8 +512,12 @@ contract LMSRMarket is ReentrancyGuard {
     }
 
     function _routeProtocolFee(uint256 protocolFee) internal {
-        if (protocolFee > 0 && protocolFeeCollector != address(0)) {
-            IERC20(address(usdcToken)).safeTransfer(protocolFeeCollector, protocolFee);
+        if (protocolFee > 0) {
+            if (protocolFeeCollector != address(0)) {
+                IERC20(address(usdcToken)).safeTransfer(protocolFeeCollector, protocolFee);
+            } else {
+                poolBalance += protocolFee; // return to pool if no collector configured
+            }
         }
     }
 
@@ -684,13 +688,13 @@ contract LMSRMarket is ReentrancyGuard {
         _validateRangeSolvency(startBucket, endBucket, shares, actualCost + lpFee);
         _applyRangeBuy(startBucket, endBucket, shares, actualCost + lpFee);
 
+        // Only pull what's needed: cost + fees (refund unused budget)
+        uint256 totalPull = actualCost + feesUSDC;
+
         feesCollectedLP += lpFee;
         lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
-        totalVolume += amountUSDC;
-
-        // Only pull what's needed: cost + fees (refund unused budget)
-        uint256 totalPull = actualCost + feesUSDC;
+        totalVolume += totalPull;
         IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), totalPull);
         _routeProtocolFee(protocolFee);
 

@@ -27,7 +27,7 @@ library LMSRCost {
 
     error ZeroAlpha();
     error ZeroSum();
-    error InvalidCost();
+    error ExpDomainOverflow();
 
     /// @notice Cost of a buy: α × ln(sumAfter / sumBefore)
     /// @param alpha Liquidity parameter (6 decimals, USDC precision)
@@ -63,10 +63,11 @@ library LMSRCost {
         proceeds = (alpha * (lnBefore - lnAfter)) / WAD;
     }
 
+    /// @dev PRB-Math exp() reverts when input > ~133.08e18.
+    uint256 internal constant MAX_EXP_INPUT = 133e18;
+
     /// @notice Convert share delta to multiplicative factor for tree
     /// @dev factor = exp(deltaShares / alpha)
-    ///      For a uniform range buy of Δq shares per bucket:
-    ///        Each bucket's exp weight gets multiplied by this factor.
     /// @param deltaShares Shares to add per bucket (6 decimals)
     /// @param alpha Liquidity parameter (6 decimals)
     /// @return factor Multiplicative factor (WAD)
@@ -77,6 +78,7 @@ library LMSRCost {
         if (alpha == 0) revert ZeroAlpha();
         // (deltaShares * WAD) / alpha → WAD-scaled ratio
         uint256 ratio = (deltaShares * WAD) / alpha;
+        if (ratio >= MAX_EXP_INPUT) revert ExpDomainOverflow();
         factor = ratio.exp();
     }
 
@@ -89,8 +91,8 @@ library LMSRCost {
         uint256 alpha
     ) internal pure returns (uint256 inverseFactor) {
         uint256 factor = sharesToFactor(deltaShares, alpha);
-        // 1/factor = WAD * WAD / factor (round up for conservative sell)
-        inverseFactor = Math.mulDiv(WAD, WAD, factor);
+        // 1/factor = WAD * WAD / factor (round UP for conservative sell — seller gets less)
+        inverseFactor = Math.mulDiv(WAD, WAD, factor, Math.Rounding.Ceil);
     }
 
     /// @notice Algebraically solve for shares given a USDC budget — replaces binary search

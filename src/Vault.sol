@@ -130,12 +130,13 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     // ERC-4626 OVERRIDES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice NAV = (liquid USDC - reserved for queue) + cached Σ market values.
-    ///         Subtracting reservedForWithdrawals prevents share price inflation from
-    ///         USDC already committed to fulfilled withdrawal requests.
+    /// @notice NAV = (liquid USDC - reserved - owed) + cached Σ market values.
+    ///         Subtracting reservedForWithdrawals (fulfilled, unclaimed) AND totalAssetsOwed
+    ///         (unfulfilled, shares already burned) prevents share price inflation.
     function totalAssets() public view override returns (uint256) {
         uint256 liquid = IERC20(asset()).balanceOf(address(this));
-        uint256 available = liquid > reservedForWithdrawals ? liquid - reservedForWithdrawals : 0;
+        uint256 unavailable = reservedForWithdrawals + totalAssetsOwed;
+        uint256 available = liquid > unavailable ? liquid - unavailable : 0;
         return available + cachedTotalMarketValue;
     }
 
