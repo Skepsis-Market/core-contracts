@@ -804,10 +804,11 @@ contract LMSRMarket is ReentrancyGuard {
         payoutUSDC = grossPayout - feesUSDC;
         if (payoutUSDC < minUsdcOut) revert InvalidParameters();
 
-        _applyRangeSell(startBucket, endBucket, sharesToSell, payoutUSDC);
-
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
+
+        _applyRangeSell(startBucket, endBucket, sharesToSell, payoutUSDC + protocolFee);
+
         feesCollectedLP += lpFee;
         lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
@@ -861,7 +862,7 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
         uint256 lpFee = feesUSDC - protocolFee;
 
-        poolBalance -= payoutUSDC;
+        poolBalance -= (payoutUSDC + protocolFee);
         feesCollectedLP += lpFee;
         lpFeesAccrued += lpFee;
         feesCollectedProtocol += protocolFee;
