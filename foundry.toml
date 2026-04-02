@@ -24,3 +24,19 @@ local = "http://127.0.0.1:8545"
 
 [etherscan]
 fuji = { key = "${SNOWSCAN_API_KEY}", url = "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan" }
+
+[profile.halmos]
+src = "src"
+out = "out-halmos"
+test = "test/halmos"
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+bytecode_hash = "none"
+remappings = [
+    "@prb/math/=lib/prb-math/src/",
+    "@openzeppelin/=lib/openzeppelin-contracts/contracts/"
+]

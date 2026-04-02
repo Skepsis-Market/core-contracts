@@ -25,3 +25,7 @@ AGENT_INSTRUCTIONS.json
 .gas-snapshot
 
 */node_modules/
+
+test/halmos/
+test/medusa
+out-halmos/
