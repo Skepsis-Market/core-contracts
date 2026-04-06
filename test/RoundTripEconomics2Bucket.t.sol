@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
@@ -43,31 +43,56 @@ contract RoundTripEconomics2BucketTest is Test {
         uint256 bucketShares;
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory ranges = new uint256[](3);
-        ranges[0] = 0;
-        ranges[1] = 1;
-        ranges[2] = 2;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, INITIAL_LIQUIDITY);
 
-        market = new LMSRMarket(
-            7001,
-            CREATOR,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            10_000_000000,
-            INITIAL_LIQUIDITY,
-            ranges,
-            FEE_BPS,
-            PROTOCOL_FEE_BPS,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 7001,
+                creator: CREATOR,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 10_000_000000,
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
+            1,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: FEE_BPS,
+                protocolFeeBps: PROTOCOL_FEE_BPS,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);
         usdc.mint(TRADER, STARTING_TRADER_USDC);
+    }
+
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
     }
 
     function test_report_buy10_and_sell_immediately_table() public {
@@ -82,13 +107,13 @@ contract RoundTripEconomics2BucketTest is Test {
         _logHeader();
         _logRow("0:init", "none", 0, 0, s0, s0);
 
-        uint256 sharesBought = market.buyShares(bucketId, grossCostToBuyAtLeast10, 0);
+        uint256 sharesBought = _buyBucket(bucketId, grossCostToBuyAtLeast10, 0);
         Snapshot memory s1 = _snapshot(bucketId);
         _logRow("1:buy", "buyShares", grossCostToBuyAtLeast10, sharesBought, s0, s1);
 
         assertGe(sharesBought, TARGET_SHARES, "Buy should mint at least 10 shares");
 
-        uint256 payout = market.sellShares(bucketId, TARGET_SHARES, 0);
+        uint256 payout = _sellBucket(bucketId, TARGET_SHARES, 0);
         Snapshot memory s2 = _snapshot(bucketId);
         _logRow("2:sell", "sellShares", payout, TARGET_SHARES, s1, s2);
 
@@ -103,7 +128,7 @@ contract RoundTripEconomics2BucketTest is Test {
     }
 
     function _snapshot(uint256 bucketId) internal view returns (Snapshot memory snap) {
-        (uint256 bucketShares,,) = market.buckets(bucketId);
+        (uint256 bucketShares,,,) = market.buckets(bucketId);
 
         snap = Snapshot({
             userUsdc: usdc.balanceOf(TRADER),

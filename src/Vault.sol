@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {LMSRMarket} from "./LMSRMarket.sol";
 
@@ -37,13 +39,15 @@ import {LMSRMarket} from "./LMSRMarket.sol";
 ///  Layer 1 – market-level  : each market enforces its own P-Z invariant (LMSRMarket.sol)
 ///  Layer 2 – vault-level   : 20% buffer on DEPLOYED capital (not idle)
 ///  Layer 3 – per-market cap: no single new deployment > 20% of totalAssets at time of call
-contract Vault is ERC4626, Ownable {
+contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ─── Constants ────────────────────────────────────────────────────────────
     uint256 public constant LIQUID_BUFFER_BPS  = 2000; // 20 % always liquid
     uint256 public constant MAX_MARKET_BPS     = 2000; // no new deployment > 20 % of NAV
     uint256 public constant BPS_DENOMINATOR    = 10000;
+
+    uint256 public constant MIN_WITHDRAWAL_REQUEST = 1_000000; // 1 USDC minimum queue request
 
     // Health thresholds (integer ×100, e.g. 120 = 1.20×)
     uint256 public constant HEALTH_INJECT_THRESHOLD   = 120; // inject when below 1.20×
@@ -78,6 +82,9 @@ contract Vault is ERC4626, Ownable {
     // ─── Withdrawal Queue Counter (O(1) pendingWithdrawalsCount) ───────────
     uint256 public pendingCount;                        // unfulfilled queue entries
 
+    // ─── Deposit Gate ─────────────────────────────────────────────────────────
+    bool public depositsEnabled;            // false = only owner can deposit (capped launch)
+
     // ─── Events ───────────────────────────────────────────────────────────────
     event MarketRegistered(address indexed market);
     event CapitalDeployed(address indexed market, uint256 amount);
@@ -87,6 +94,8 @@ contract Vault is ERC4626, Ownable {
     event WithdrawalRequested(address indexed owner, uint256 indexed queueIndex, uint256 sharesBurned, uint256 assetsOwed);
     event WithdrawalFulfilled(uint256 indexed queueIndex, uint256 assetsOwed);
     event WithdrawalClaimed(address indexed owner, uint256 indexed queueIndex, uint256 assets);
+    event DepositsEnabledUpdated(bool enabled);
+    event FactoryUpdated(address indexed oldFactory, address indexed newFactory);
 
     // ─── Errors ───────────────────────────────────────────────────────────────
     error MarketAlreadyRegistered();
@@ -101,6 +110,7 @@ contract Vault is ERC4626, Ownable {
     error WithdrawalNotFulfilled();
     error WithdrawalAlreadyClaimed();
     error InsufficientShares();
+    error DepositsDisabled();
 
     // ─── Constructor ──────────────────────────────────────────────────────────
     constructor(
@@ -110,15 +120,24 @@ contract Vault is ERC4626, Ownable {
         address _owner
     ) ERC20(_name, _symbol) ERC4626(IERC20(_asset)) Ownable(_owner) {}
 
+    /// @dev Virtual offset of 6 decimals (1e6 virtual shares) prevents first-depositor
+    ///      inflation attack. An attacker would need to donate >1e6 USDC to steal 1 wei.
+    function _decimalsOffset() internal pure override returns (uint8) {
+        return 6;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // ERC-4626 OVERRIDES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice NAV = vault liquid USDC + cached Σ market values.
-    ///         O(1) — uses incrementally-updated cache instead of looping all markets.
-    ///         Call syncMarketValue() to refresh individual market values if needed.
+    /// @notice NAV = (liquid USDC - reserved - owed) + cached Σ market values.
+    ///         Subtracting reservedForWithdrawals (fulfilled, unclaimed) AND totalAssetsOwed
+    ///         (unfulfilled, shares already burned) prevents share price inflation.
     function totalAssets() public view override returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this)) + cachedTotalMarketValue;
+        uint256 liquid = IERC20(asset()).balanceOf(address(this));
+        uint256 unavailable = reservedForWithdrawals + totalAssetsOwed;
+        uint256 available = liquid > unavailable ? liquid - unavailable : 0;
+        return available + cachedTotalMarketValue;
     }
 
     /// @notice Total value currently deployed in active/resolved markets (cached).
@@ -157,19 +176,54 @@ contract Vault is ERC4626, Ownable {
         return previewWithdraw(maxWithdraw(owner));
     }
 
-    // Deposits stay liquid in the vault; admin deploys capital separately via deployTo().
-    // No _deposit override needed — standard ERC-4626 behaviour is correct.
+    /// @notice Returns 0 when paused or deposits disabled (unless caller is owner).
+    function maxDeposit(address receiver) public view override returns (uint256) {
+        if (paused()) return 0;
+        if (!depositsEnabled && receiver != owner()) return 0;
+        return type(uint256).max;
+    }
 
-    /// @notice Withdrawals only from liquid USDC above the 20% buffer.
+    /// @notice Returns 0 when paused or deposits disabled (unless caller is owner).
+    function maxMint(address receiver) public view override returns (uint256) {
+        if (paused()) return 0;
+        if (!depositsEnabled && receiver != owner()) return 0;
+        return type(uint256).max;
+    }
+
+    /// @notice Deposit gate — blocked when paused or deposits disabled (unless owner).
+    function _deposit(
+        address caller,
+        address receiver,
+        uint256 assets,
+        uint256 shares
+    ) internal override whenNotPaused {
+        if (!depositsEnabled && caller != owner()) revert DepositsDisabled();
+        super._deposit(caller, receiver, assets, shares);
+    }
+
+    /// @notice Withdrawals only from liquid USDC above the 20% buffer. Blocked when paused.
     function _withdraw(
         address caller,
         address receiver,
-        address owner,
+        address owner_,
         uint256 assets,
         uint256 shares
-    ) internal override {
+    ) internal override whenNotPaused {
         if (assets > liquidAvailable()) revert InsufficientLiquidBuffer();
-        super._withdraw(caller, receiver, owner, assets, shares);
+        super._withdraw(caller, receiver, owner_, assets, shares);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADMIN: PAUSE + DEPOSIT GATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+
+    /// @notice Enable/disable public deposits. When disabled, only owner can deposit.
+    function setDepositsEnabled(bool _enabled) external onlyOwner {
+        depositsEnabled = _enabled;
+        emit DepositsEnabledUpdated(_enabled);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -188,7 +242,9 @@ contract Vault is ERC4626, Ownable {
 
     /// @notice Set the factory that can call fundNewMarket
     function setFactory(address _factory) external onlyOwner {
+        address oldFactory = factory;
         factory = _factory;
+        emit FactoryUpdated(oldFactory, _factory);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -204,9 +260,10 @@ contract Vault is ERC4626, Ownable {
     function requestWithdrawal(uint256 shares) external returns (uint256 queueIndex) {
         if (shares == 0) revert InsufficientShares();
         if (balanceOf(msg.sender) < shares) revert InsufficientShares();
-        
+
         // Calculate USDC owed at CURRENT exchange rate (crystallize exit value)
         uint256 assetsOwed = convertToAssets(shares);
+        if (assetsOwed < MIN_WITHDRAWAL_REQUEST) revert InsufficientShares();
         
         // Burn shares immediately - LP stops earning from this point
         _burn(msg.sender, shares);
@@ -366,7 +423,7 @@ contract Vault is ERC4626, Ownable {
     ///         withdrawable (above requiredReserves = maxLiability + 2·alpha_current·ln(N)).
     ///         As alpha decays, requiredReserves shrink and this call can return more capital.
     ///         Returned capital is first allocated to queued withdrawal requests (FIFO).
-    function harvestSurplus(address market) external {
+    function harvestSurplus(address market) external nonReentrant {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
         LMSRMarket m = LMSRMarket(market);
@@ -389,7 +446,7 @@ contract Vault is ERC4626, Ownable {
     /// @notice Pull LP residual from a resolved market back to the vault.
     ///         Permissionless. Market must be RESOLVED and not yet claimed.
     ///         Returned capital is first allocated to queued withdrawal requests (FIFO).
-    function harvestResolved(address market) external {
+    function harvestResolved(address market) external nonReentrant {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
         LMSRMarket m = LMSRMarket(market);
@@ -521,9 +578,10 @@ contract Vault is ERC4626, Ownable {
         }
 
         if (s == LMSRMarket.MarketStatus.RESOLVED && !m.lpWithdrawn()) {
-            LMSRMarket.Bucket memory winBucket = m.getBucket(m.winningBucket());
+            (uint256 winShares, uint256 initShares, , ) = m.buckets(m.winningBucket());
+            uint256 traderShares = winShares > initShares ? winShares - initShares : 0;
             uint256 pool = m.poolBalance();
-            return pool > winBucket.shares ? pool - winBucket.shares : 0;
+            return pool > traderShares ? pool - traderShares : 0;
         }
 
         return 0;

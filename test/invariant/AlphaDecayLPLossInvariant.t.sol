@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -33,9 +33,12 @@ contract AlphaDecayLossHandler is Test {
             usdc.mint(trader, amountUSDC * 3);
         }
 
+        uint256 lower = bucketId * market.bucketWidth();
+        uint256 upper = lower + market.bucketWidth();
+
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buyShares(bucketId, amountUSDC, 0) {} catch {}
+        try market.buySharesRange(lower, upper, amountUSDC, 0, 0, address(0)) {} catch {}
         vm.stopPrank();
 
         _updateLossObservations();
@@ -59,7 +62,7 @@ contract AlphaDecayLossHandler is Test {
 
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buySharesRange(rangeLower, rangeUpper, amountUSDC, 0, 0) {} catch {}
+        try market.buySharesRange(rangeLower, rangeUpper, amountUSDC, 0, 0, address(0)) {} catch {}
         vm.stopPrank();
 
         _updateLossObservations();
@@ -89,7 +92,7 @@ contract AlphaDecayLossHandler is Test {
     function _maxLiabilityBucket() internal view returns (uint256 winner) {
         uint256 maxShares = 0;
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
                 winner = i;
@@ -117,7 +120,7 @@ contract AlphaDecayLossHandler is Test {
 
     function _maxLiability() internal view returns (uint256 maxShares) {
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }
@@ -153,25 +156,35 @@ contract AlphaDecayLPLossInvariantTest is StdInvariant, Test {
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory bucketRanges = new uint256[](11);
-        for (uint256 i = 0; i <= 10; i++) {
-            bucketRanges[i] = i;
+        uint256 numBuckets = 10;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 per = INITIAL_LIQUIDITY / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = i;
+            seedShares[i] = per;
         }
+        seedShares[numBuckets - 1] += INITIAL_LIQUIDITY - (per * numBuckets);
 
-        market = new LMSRMarket(
-            91001,
-            CREATOR,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            3_333_333333,
-            INITIAL_LIQUIDITY,
-            bucketRanges,
-            0,
-            0,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 91001,
+                creator: CREATOR,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 3_333_333333,
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
+            9,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: 0,
+                protocolFeeBps: 0,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);
 
@@ -241,7 +254,7 @@ contract AlphaDecayLPLossInvariantTest is StdInvariant, Test {
 
     function _maxLiability() internal view returns (uint256 maxShares) {
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }

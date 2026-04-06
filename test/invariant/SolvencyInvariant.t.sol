@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -40,31 +40,34 @@ contract SolvencyHandler is Test {
         traderIndex = bound(traderIndex, 0, traders.length - 1);
         bucketId = bound(bucketId, 0, market.bucketCount() - 1);
         amountUSDC = bound(amountUSDC, 10_000000, 10000_000000); // $10 to $10,000
-        
+
         address trader = traders[traderIndex];
-        
+
         // Mint USDC if needed
         if (usdc.balanceOf(trader) < amountUSDC) {
             usdc.mint(trader, amountUSDC * 2);
         }
-        
+
+        uint256 lower = bucketId * market.bucketWidth();
+        uint256 upper = lower + market.bucketWidth();
+
         // Try to buy (may revert due to slippage, which is OK)
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        
-        try market.buyShares(bucketId, amountUSDC, 0) {
+
+        try market.buySharesRange(lower, upper, amountUSDC, 0, 0, address(0)) {
             totalBuys++;
             tradeCount++;
         } catch {
             // Trade reverted (e.g., solvency violation, slippage), that's fine
         }
-        
+
         vm.stopPrank();
-        
+
         // Update ghost variables
         _updateGhostVariables();
     }
-    
+
     /// @notice Randomly sell shares from a random bucket
     /// @param traderIndex Index of trader to execute the sell
     /// @param bucketId Bucket to sell from
@@ -74,26 +77,29 @@ contract SolvencyHandler is Test {
         traderIndex = bound(traderIndex, 0, traders.length - 1);
         bucketId = bound(bucketId, 0, market.bucketCount() - 1);
         sharePercent = bound(sharePercent, 1, 100);
-        
+
         // Get bucket shares
-        (uint256 bucketShares,,) = market.buckets(bucketId);
+        (uint256 bucketShares,,,) = market.buckets(bucketId);
         if (bucketShares == 0) return; // Nothing to sell
-        
+
         // Calculate shares to sell (percentage of bucket shares)
         uint256 sharesToSell = (bucketShares * sharePercent) / 100;
         if (sharesToSell == 0) return;
-        
+
+        uint256 lower = bucketId * market.bucketWidth();
+        uint256 upper = lower + market.bucketWidth();
+
         address trader = traders[traderIndex];
-        
+
         // Try to sell (may revert, which is OK)
         vm.prank(trader);
-        try market.sellShares(bucketId, sharesToSell, 0) {
+        try market.sellSharesRange(lower, upper, sharesToSell, 0, address(0)) {
             totalSells++;
             tradeCount++;
         } catch {
             // Trade reverted, that's fine
         }
-        
+
         // Update ghost variables
         _updateGhostVariables();
     }
@@ -107,7 +113,7 @@ contract SolvencyHandler is Test {
         
         // Check max shares across all buckets
         for (uint256 i = 0; i < market.bucketCount(); i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             uint256 sharesUSDC = shares.fromWad();
             if (sharesUSDC > maxSharesEverSeen) {
                 maxSharesEverSeen = sharesUSDC;
@@ -153,27 +159,43 @@ contract SolvencyInvariantTest is StdInvariant, Test {
             traders.push(address(uint160(0x1000 + i)));
         }
         
-        // Deploy market with 10 buckets
-        uint256[] memory bucketRanges = new uint256[](11);
-        for (uint256 i = 0; i <= 10; i++) {
-            bucketRanges[i] = i * 10; // 0, 10, 20, ..., 100
+        // Deploy market with 10 buckets (width=10, IDs 0-9)
+        uint256 numBuckets = 10;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 per = POOL_BALANCE / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = i;
+            seedShares[i] = per;
         }
+        seedShares[numBuckets - 1] += POOL_BALANCE - (per * numBuckets);
         
         vm.prank(creator);
-        market = new LMSRMarket(
-            1, // marketId
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: // marketId
             creator,
-            address(0xFACE), // factory
+                factory: address(0xFACE),
+                usdcToken: // factory
             address(usdc),
-            address(0x2), // positionNFT
-            3_333_333333, // alpha = POOL / sqrt(10)
+                positionNFT: address(0x2),
+                alpha: // positionNFT
+            3_333_333333,
+                poolBalance: // alpha = POOL / sqrt(10)
             POOL_BALANCE,
-            bucketRanges,
-            50, // 0.5% fee
-            2000, // 20% protocol fee
+                bucketWidth: 10,
+                maxBucketId: // bucketWidth
+            9,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: // 0.5% fee
+            2000,
+                metadata: // 20% protocol fee
             _defaultMetadata(),
-            address(0xFEE)
-        );
+                protocolFeeCollector: address(0xFEE)
+            }));
         
         // Mint initial pool balance to market
         usdc.mint(address(market), POOL_BALANCE);
@@ -202,7 +224,7 @@ contract SolvencyInvariantTest is StdInvariant, Test {
         uint256 bucketCount = market.bucketCount();
         
         for (uint256 i = 0; i < bucketCount; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             uint256 sharesUSDC = shares.fromWad();
             
             // CRITICAL INVARIANT: Max payout cannot exceed available funds
@@ -235,7 +257,7 @@ contract SolvencyInvariantTest is StdInvariant, Test {
         uint256 bucketCount = market.bucketCount();
         
         for (uint256 i = 0; i < bucketCount; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             totalSharesUSDC += shares.fromWad();
         }
         

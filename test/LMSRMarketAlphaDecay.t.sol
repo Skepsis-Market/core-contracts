@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -27,6 +27,19 @@ contract LMSRMarketAlphaDecayTest is Test {
         });
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     uint256 marketId = 1;
     uint256 alphaParam = 500_000000;
     uint256 poolBalance = 1000_000000;
@@ -36,34 +49,38 @@ contract LMSRMarketAlphaDecayTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory bucketRanges = new uint256[](5);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 75;
-        bucketRanges[4] = 100;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, poolBalance);
 
-        market = new LMSRMarket(
-            marketId,
-            creator,
-            factory,
-            address(usdc),
-            positionNFT,
-            alphaParam,
-            poolBalance,
-            bucketRanges,
-            feeBps,
-            protocolFeeBps,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: marketId,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: alphaParam,
+                poolBalance: poolBalance,
+                bucketWidth: 25,
+                maxBucketId: // bucketWidth
+            3,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: feeBps,
+                protocolFeeBps: protocolFeeBps,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), poolBalance);
     }
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
     function test_decayDisabledByDefault() public view {
-        assertFalse(market.isAlphaDecayConfigured());
-        assertFalse(market.needsAlphaSync());
+        assertFalse(market.decayDuration() > 0 && market.alphaFinal() < market.alphaInitial());
         assertEq(market.alphaInitial(), market.alpha());
         assertEq(market.alphaFinal(), market.alpha());
     }
@@ -77,7 +94,7 @@ contract LMSRMarketAlphaDecayTest is Test {
         vm.prank(creator);
         market.configureAlphaDecay(finalAlpha, start, duration);
 
-        assertTrue(market.isAlphaDecayConfigured());
+        assertTrue(market.decayDuration() > 0 && market.alphaFinal() < market.alphaInitial());
         assertEq(market.alphaFinal(), finalAlpha);
         assertEq(market.decayStartTime(), start);
         assertEq(market.decayDuration(), duration);
@@ -136,8 +153,9 @@ contract LMSRMarketAlphaDecayTest is Test {
 
         vm.warp(block.timestamp + market.ALPHA_EPOCH_LENGTH() + 1);
 
-        vm.prank(trader);
-        market.buyShares(0, 10_000000, 0);
+        vm.startPrank(trader);
+        _buyBucket(0, 10_000000, 0);
+        vm.stopPrank();
 
         assertLt(market.alpha(), initialAlpha);
     }

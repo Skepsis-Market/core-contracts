@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -28,30 +28,43 @@ contract PZWithdrawalTest is Test {
         });
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory bucketRanges = new uint256[](5);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 75;
-        bucketRanges[4] = 100;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, 1000_000000);
 
-        market = new LMSRMarket(
-            1,
-            creator,
-            factory,
-            address(usdc),
-            positionNFT,
-            500_000000,
-            1000_000000,
-            bucketRanges,
-            50,
-            2000,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: 500_000000,
+                poolBalance: 1000_000000,
+                bucketWidth: 25,
+                maxBucketId: // bucketWidth
+            3,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), 1000_000000);
     }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
@@ -27,6 +27,28 @@ contract BenchmarkTwoBucketDecayTest is Test {
     uint256 internal constant ONE_SHARE = 1_000000; // 1 share in 6 decimals
     uint256 internal constant ONE_PERCENT_WAD = 0.01e18;
 
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function _defaultMetadata() internal pure returns (LMSRMarket.MarketMetadata memory) {
         return LMSRMarket.MarketMetadata({
             name: "",
@@ -43,25 +65,29 @@ contract BenchmarkTwoBucketDecayTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
 
-        uint256[] memory ranges = new uint256[](3);
-        ranges[0] = 0;
-        ranges[1] = 1;
-        ranges[2] = 2;
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, INITIAL_LIQUIDITY);
 
-        market = new LMSRMarket(
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: 10_000_000000,
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
             1,
-            creator,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            10_000_000000,
-            INITIAL_LIQUIDITY,
-            ranges,
-            0, // feeBps = 0 for pure math benchmark
-            0,  // protocolFeeBps = 0
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: 0,
+                protocolFeeBps: // feeBps = 0 for pure math benchmark
+            0,
+                metadata: // protocolFeeBps = 0
             _defaultMetadata(),
-            address(0xFEE)
-        );
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         // Seed initial liquidity
         usdc.mint(address(market), INITIAL_LIQUIDITY);
@@ -155,7 +181,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
                 break;
             }
 
-            uint256 sharesMinted = market.buyShares(bucketId, stepSpend, 0);
+            uint256 sharesMinted = _buyBucket(bucketId, stepSpend, 0);
             cumulativeSpend += stepSpend;
             _logTableRow(step, cumulativeSpend, sharesMinted, "buyShares(1,100e6,0)");
         }
@@ -172,11 +198,20 @@ contract BenchmarkTwoBucketDecayTest is Test {
     // ─────────────────────────────────────────────────────────────────────────────
 
     function _spotProbability(uint256 bucketId) internal view returns (uint256) {
-        (uint256 shares,,) = market.buckets(bucketId);
+        (uint256 shares,,,) = market.buckets(bucketId);
         uint256 ratio = ((shares + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
         uint256 bucketExp = ratio.exp();
-        uint256 sumExp = market.getCachedSumExp();
+        uint256 sumExp = _computeSumExp();
         return (bucketExp * 1e18) / sumExp;
+    }
+
+    function _computeSumExp() internal view returns (uint256 sumExp) {
+        uint256 n = market.bucketCount();
+        for (uint256 i = 0; i < n; i++) {
+            (uint256 s,,,) = market.buckets(i);
+            uint256 r = ((s + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
+            sumExp += r.exp();
+        }
     }
 
     function _costForOneShare(uint256 bucketId) internal view returns (uint256) {
@@ -217,7 +252,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
             if (p >= lower && p <= upper) break;
 
             if (p < target) {
-                market.buyShares(bucketId, 100_000000, 0); // $100 step
+                _buyBucket(bucketId, 100_000000, 0); // $100 step
             } else {
                 break;
             }
@@ -231,7 +266,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
         uint256 maxShares = 0;
         uint256 buckets = market.bucketCount();
         for (uint256 i = 0; i < buckets; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }
@@ -243,7 +278,7 @@ contract BenchmarkTwoBucketDecayTest is Test {
     function _logTableRow(uint256 step, uint256 cumulativeSpend, uint256 sharesMinted, string memory txLabel) internal view {
         uint256 p1 = _spotProbability(1);
         uint256 costOne = _costForOneShare(1);
-        (uint256 bucket1Shares,,) = market.buckets(1);
+        (uint256 bucket1Shares,,,) = market.buckets(1);
 
         string memory line = string.concat(
             vm.toString(step), ",",

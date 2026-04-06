@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {MarketFactory} from "../src/MarketFactory.sol";
@@ -29,14 +29,17 @@ contract MarketFactoryTest is Test {
         usdc = new MockUSDC();
 
         // Deploy LMSRMarket implementation (EIP-1167 clone source for all markets)
-        uint256[] memory implRanges = new uint256[](2);
-        implRanges[0] = 0;
-        implRanges[1] = 1;
+        uint256[] memory implSeedIds = new uint256[](2);
+        uint256[] memory implSeedShares = new uint256[](2);
+        implSeedIds[0] = 0; implSeedIds[1] = 1;
+        implSeedShares[0] = 1; implSeedShares[1] = 1; // minimal valid
         LMSRMarket.MarketMetadata memory implMeta;
-        address lmsrImpl = address(new LMSRMarket(
-            0, address(0), address(0), address(usdc), address(0),
-            1, 1, implRanges, 0, 0, implMeta, address(0xFEE)
-        ));
+        // Implementation needs valid init — use minimal valid params
+        address lmsrImpl = address(new LMSRMarket(LMSRMarket.InitParams({
+            marketId: 0, creator: address(0), factory: address(0), usdcToken: address(usdc), positionNFT: address(0),
+            alpha: 1, poolBalance: 2, bucketWidth: 1, maxBucketId: 1, seededBucketIds: implSeedIds, seededShares: implSeedShares,
+            feeBps: 0, protocolFeeBps: 0, metadata: implMeta, protocolFeeCollector: address(0xFEE)
+        })));
 
         // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
         address predictedFactoryAddress = vm.computeCreateAddress(admin, 3);
@@ -58,6 +61,7 @@ contract MarketFactoryTest is Test {
 
         // Deploy vault and wire up
         vault = new Vault(address(usdc), "Vault", "sVLT", admin);
+        vault.setDepositsEnabled(true);
         factory.setVault(address(vault));
         vault.setFactory(address(factory));
 
@@ -78,7 +82,7 @@ contract MarketFactoryTest is Test {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// @dev Build a MarketParams struct with new Sui-parity format
+    /// @dev Build a MarketParams struct with absolute bucket indexing
     function _params(
         uint256 seedAmount,
         uint256 minValue,
@@ -87,13 +91,25 @@ contract MarketFactoryTest is Test {
         uint256 feeBps,
         uint256 protoBps
     ) internal pure returns (MarketFactory.MarketParams memory p) {
-        p.alpha        = seedAmount / _isqrt(bucketCount);
-        p.seedAmount   = seedAmount;
-        p.minValue     = minValue;
-        p.maxValue     = maxValue;
-        p.bucketCount  = bucketCount;
-        p.feeBps       = feeBps;
-        p.protocolFeeBps = protoBps;
+        uint256 bw = (maxValue - minValue) / bucketCount;
+        uint256 startBucket = minValue / bw;
+        uint256 maxBid = startBucket + bucketCount - 1;
+        
+        uint256[] memory seedIds = new uint256[](bucketCount);
+        uint256[] memory seedShares = new uint256[](bucketCount);
+        uint256 per = seedAmount / bucketCount;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = per;
+        }
+        seedShares[bucketCount - 1] += seedAmount - (per * bucketCount);
+        
+        p.alpha           = seedAmount / _isqrt(bucketCount);
+        p.seedAmount      = seedAmount;
+        p.bucketWidth     = bw;
+        p.maxBucketId     = maxBid;
+        p.seededBucketIds = seedIds;
+        p.seededShares    = seedShares;
     }
 
     function _isqrt(uint256 x) internal pure returns (uint256) {
@@ -186,27 +202,35 @@ contract MarketFactoryTest is Test {
         vm.expectRevert(MarketFactory.PoolBalanceTooLow.selector);
         factory.createMarket(_params(50_000000, 0, 100, 4, 0, 0)); // $50 < $100 min
 
-        // Too few buckets (bucketCount < 2)
+        // Too few buckets (seededBucketIds.length < 2)
         MarketFactory.MarketParams memory pFew;
         pFew.alpha = 500_000000;
         pFew.seedAmount = minPoolBalance;
-        pFew.minValue = 0;
-        pFew.maxValue = 100;
-        pFew.bucketCount = 1; // must be >= 2
+        pFew.bucketWidth = 50;
+        pFew.maxBucketId = 1;
+        pFew.seededBucketIds = new uint256[](1);
+        pFew.seededBucketIds[0] = 0;
+        pFew.seededShares = new uint256[](1);
+        pFew.seededShares[0] = minPoolBalance;
 
         vm.prank(creator1);
         vm.expectRevert(MarketFactory.InvalidParameters.selector);
         factory.createMarket(pFew);
 
-        // Invalid range (minValue >= maxValue)
-        vm.prank(creator1);
-        vm.expectRevert(MarketFactory.InvalidBucketRanges.selector);
-        factory.createMarket(_params(minPoolBalance, 100, 50, 4, 0, 0)); // min > max
+        // Mismatched seed arrays
+        MarketFactory.MarketParams memory pBad;
+        pBad.alpha = 500_000000;
+        pBad.seedAmount = minPoolBalance;
+        pBad.bucketWidth = 50;
+        pBad.maxBucketId = 1;
+        pBad.seededBucketIds = new uint256[](2);
+        pBad.seededBucketIds[0] = 0;
+        pBad.seededBucketIds[1] = 1;
+        pBad.seededShares = new uint256[](3); // wrong length
 
-        // Non-even bucket widths
         vm.prank(creator1);
         vm.expectRevert(MarketFactory.InvalidBucketRanges.selector);
-        factory.createMarket(_params(minPoolBalance, 0, 100, 3, 0, 0)); // 100/3 not even
+        factory.createMarket(pBad);
     }
 
     function test_createMarket_transfersUSDC() public {
@@ -221,25 +245,16 @@ contract MarketFactoryTest is Test {
         assertEq(usdc.balanceOf(marketAddress), poolBalance, "Market should receive seed from vault");
     }
 
-    function test_createMarket_setsFeesCorrectly() public {
+    function test_createMarket_usesFactoryDefaultFees() public {
         uint256 poolBalance = 1000_000000;
 
-        usdc.mint(creator1, poolBalance * 2);
-        vm.startPrank(creator1);
-
-        // Default fees (0, 0)
+        usdc.mint(creator1, poolBalance);
+        vm.prank(creator1);
         address market1 = _cm(poolBalance, 0, 100, 2, 0, 0);
 
-        // Custom fees
-        uint256 customFeeBps        = 100;  // 1%
-        uint256 customProtocolFeeBps = 5000; // 50%
-        address market2 = _cm(poolBalance, 0, 100, 2, customFeeBps, customProtocolFeeBps);
-        vm.stopPrank();
-
+        // Both markets always get factory defaults
         assertEq(LMSRMarket(market1).feeBps(), defaultFeeBps, "Should use default fee bps");
         assertEq(LMSRMarket(market1).protocolFeeBps(), defaultProtocolFeeBps, "Should use default protocol fee bps");
-        assertEq(LMSRMarket(market2).feeBps(), customFeeBps, "Should use custom fee bps");
-        assertEq(LMSRMarket(market2).protocolFeeBps(), customProtocolFeeBps, "Should use custom protocol fee bps");
     }
 
     function test_createMarket_incrementsMarketCount() public {
@@ -352,11 +367,11 @@ contract MarketFactoryTest is Test {
 
         assertEq(LMSRMarket(market1).creator(), creator1);
         assertEq(LMSRMarket(market1).poolBalance(), poolBalance);
-        assertEq(LMSRMarket(market1).feeBps(), 50);
+        assertEq(LMSRMarket(market1).feeBps(), defaultFeeBps);
 
         assertEq(LMSRMarket(market2).creator(), creator2);
         assertEq(LMSRMarket(market2).poolBalance(), poolBalance * 2);
-        assertEq(LMSRMarket(market2).feeBps(), 100);
+        assertEq(LMSRMarket(market2).feeBps(), defaultFeeBps);
 
         assertTrue(factory.isValidMarket(market1));
         assertTrue(factory.isValidMarket(market2));
@@ -380,13 +395,16 @@ contract MarketFactoryTest is Test {
         // 10% floor  = 100_000000; use 500_000000 as alphaFinal (50%)
         uint256 poolBalance = 1000_000000;
 
-        // ── Case 1: no decay params → isAlphaDecayConfigured() == false ─────────
+        // ── Case 1: no decay params → decay not configured ─────────
         vm.prank(creator1);
         address mktNoDecay = factory.createMarket(_params(poolBalance, 0, 100, 2, 0, 0));
 
-        assertFalse(LMSRMarket(mktNoDecay).isAlphaDecayConfigured(), "No decay params = no decay");
+        assertFalse(
+            LMSRMarket(mktNoDecay).decayDuration() > 0 && LMSRMarket(mktNoDecay).alphaFinal() < LMSRMarket(mktNoDecay).alphaInitial(),
+            "No decay params = no decay"
+        );
 
-        // ── Case 2: decay params provided → isAlphaDecayConfigured() == true ────
+        // ── Case 2: decay params provided → decay configured ────
         MarketFactory.MarketParams memory p = _params(poolBalance, 0, 100, 2, 0, 0);
         p.decayDuration = 7 days;
         p.decayStart    = block.timestamp;
@@ -395,7 +413,10 @@ contract MarketFactoryTest is Test {
         vm.prank(creator1);
         address mktDecay = factory.createMarket(p);
 
-        assertTrue(LMSRMarket(mktDecay).isAlphaDecayConfigured(), "Decay params provided = configured");
+        assertTrue(
+            LMSRMarket(mktDecay).decayDuration() > 0 && LMSRMarket(mktDecay).alphaFinal() < LMSRMarket(mktDecay).alphaInitial(),
+            "Decay params provided = configured"
+        );
         assertEq(LMSRMarket(mktDecay).alphaFinal(), 500_000000, "alphaFinal set correctly");
         assertEq(LMSRMarket(mktDecay).decayDuration(), 7 days, "decayDuration set correctly");
     }

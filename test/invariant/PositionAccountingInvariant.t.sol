@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -30,9 +30,12 @@ contract PositionHandler is Test {
             usdc.mint(trader, amountUSDC * 2);
         }
 
+        uint256 lower = bucketId * market.bucketWidth();
+        uint256 upper = lower + market.bucketWidth();
+
         vm.startPrank(trader);
         usdc.approve(address(market), amountUSDC);
-        try market.buyShares(bucketId, amountUSDC, 0) {} catch {}
+        try market.buySharesRange(lower, upper, amountUSDC, 0, 0, address(0)) {} catch {}
         vm.stopPrank();
     }
 
@@ -42,15 +45,18 @@ contract PositionHandler is Test {
         percentBps = bound(percentBps, 1, 10000);
 
         address trader = traders[traderIndex];
-        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | uint256(uint128(bucketId));
+        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
         uint256 balance = positionNFT.balanceOf(trader, tokenId);
         if (balance == 0) return;
 
         uint256 sharesToSell = (balance * percentBps) / 10000;
         if (sharesToSell == 0) sharesToSell = 1;
 
+        uint256 lower = bucketId * market.bucketWidth();
+        uint256 upper = lower + market.bucketWidth();
+
         vm.prank(trader);
-        try market.sellShares(bucketId, sharesToSell, 0) {} catch {}
+        try market.sellSharesRange(lower, upper, sharesToSell, 0, address(0)) {} catch {}
     }
 }
 
@@ -80,25 +86,36 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
         usdc = new MockUSDC();
         positionNFT = new PositionNFT(address(this));
 
-        uint256[] memory bucketRanges = new uint256[](6);
-        for (uint256 i = 0; i < 6; i++) {
-            bucketRanges[i] = i * 20;
+        uint256 numBuckets = 5;
+        uint256[] memory seedIds = new uint256[](numBuckets);
+        uint256[] memory seedShares = new uint256[](numBuckets);
+        uint256 pool = 10000_000000;
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            seedIds[i] = i;
+            seedShares[i] = per;
         }
+        seedShares[numBuckets - 1] += pool - (per * numBuckets);
 
-        market = new LMSRMarket(
-            1,
-            creator,
-            address(this),
-            address(usdc),
-            address(positionNFT),
-            5_000_000000,
-            10000_000000,
-            bucketRanges,
-            50,
-            2000,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: address(this),
+                usdcToken: address(usdc),
+                positionNFT: address(positionNFT),
+                alpha: 5_000_000000,
+                poolBalance: pool,
+                bucketWidth: 20,
+                maxBucketId: // bucketWidth
+            4,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: 50,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         positionNFT.authorizeMarket(address(market), 1);
         usdc.mint(address(market), 10000_000000);
@@ -120,14 +137,14 @@ contract PositionAccountingInvariantTest is StdInvariant, Test {
     /// @notice Sum of user position tokens for a bucket must not exceed bucket shares liability.
     function invariant_userTokenSupplyNeverExceedsBucketShares() public view {
         for (uint256 bucketId = 0; bucketId < market.bucketCount(); bucketId++) {
-            uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | uint256(uint128(bucketId));
+            uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
             uint256 userTokenSum = 0;
 
             for (uint256 i = 0; i < traders.length; i++) {
                 userTokenSum += positionNFT.balanceOf(traders[i], tokenId);
             }
 
-            (uint256 bucketShares,,) = market.buckets(bucketId);
+            (uint256 bucketShares,,,) = market.buckets(bucketId);
             assertLe(userTokenSum, bucketShares, "User token balances exceed bucket shares");
         }
     }

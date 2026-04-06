@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {MarketFactory} from "../../src/MarketFactory.sol";
@@ -33,14 +33,28 @@ contract MarketLifecycleTest is Test {
 
         // Deploy LMSRMarket implementation (EIP-1167 clone source)
         {
-            uint256[] memory implRanges = new uint256[](2);
-            implRanges[0] = 0;
-            implRanges[1] = 1;
+            uint256[] memory implSeedIds = new uint256[](2);
+            uint256[] memory implSeedShares = new uint256[](2);
+            implSeedIds[0] = 0; implSeedIds[1] = 1;
+            implSeedShares[0] = 1; implSeedShares[1] = 1;
             LMSRMarket.MarketMetadata memory implMeta;
-            address lmsrImpl = address(new LMSRMarket(
-                0, address(0), address(0), address(usdc), address(0),
-                1, 1, implRanges, 0, 0, implMeta, address(0xFEE)
-            ));
+            address lmsrImpl = address(new LMSRMarket(LMSRMarket.InitParams({
+                    marketId: 0,
+                    creator: address(0),
+                    factory: address(0),
+                    usdcToken: address(usdc),
+                    positionNFT: address(0),
+                    alpha: 1,
+                    poolBalance: 2,
+                    bucketWidth: 1,
+                    maxBucketId: 1,
+                    seededBucketIds: implSeedIds,
+                    seededShares: implSeedShares,
+                    feeBps: 0,
+                    protocolFeeBps: 0,
+                    metadata: implMeta,
+                    protocolFeeCollector: address(0xFEE)
+                })));
 
             // nonce 0: usdc, nonce 1: impl, nonce 2: positionNFT -> factory at nonce 3
             address predictedFactory = vm.computeCreateAddress(admin, 3);
@@ -69,6 +83,7 @@ contract MarketLifecycleTest is Test {
 
         // Deploy vault and wire up
         vault = new Vault(address(usdc), "Vault", "sVLT", admin);
+        vault.setDepositsEnabled(true);
         factory.setVault(address(vault));
         vault.setFactory(address(factory));
 
@@ -98,13 +113,25 @@ contract MarketLifecycleTest is Test {
         uint256 feeBps,
         uint256 protoBps
     ) internal pure returns (MarketFactory.MarketParams memory p) {
-        p.alpha        = sa / _isqrt(bucketCount);
-        p.seedAmount   = sa;
-        p.minValue     = minValue;
-        p.maxValue     = maxValue;
-        p.bucketCount  = bucketCount;
-        p.feeBps       = feeBps;
-        p.protocolFeeBps = protoBps;
+        uint256 bw = (maxValue - minValue) / bucketCount;
+        uint256 startBucket = (minValue == 0) ? 0 : minValue / bw;
+        uint256 maxBid = startBucket + bucketCount - 1;
+        
+        uint256[] memory seedIds = new uint256[](bucketCount);
+        uint256[] memory seedShares = new uint256[](bucketCount);
+        uint256 per = sa / bucketCount;
+        for (uint256 i = 0; i < bucketCount; i++) {
+            seedIds[i] = startBucket + i;
+            seedShares[i] = per;
+        }
+        seedShares[bucketCount - 1] += sa - (per * bucketCount);
+        
+        p.alpha           = sa / _isqrt(bucketCount);
+        p.seedAmount      = sa;
+        p.bucketWidth     = bw;
+        p.maxBucketId     = maxBid;
+        p.seededBucketIds = seedIds;
+        p.seededShares    = seedShares;
     }
 
     function _isqrt(uint256 x) internal pure returns (uint256) {
@@ -127,6 +154,19 @@ contract MarketLifecycleTest is Test {
         return factory.createMarket(_params(pb, minValue, maxValue, bucketCount, feeBps, protoBps));
     }
 
+    function _buyBucket(LMSRMarket m, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = bucketId * m.bucketWidth();
+        return m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
+    }
+    function _sellBucket(LMSRMarket m, uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = bucketId * m.bucketWidth();
+        return m.sellSharesRange(lower, lower + m.bucketWidth(), shares, minPayout, address(0));
+    }
+    function _claimBucket(LMSRMarket m, uint256 bucketId) internal returns (uint256) {
+        uint256 tokenId = (uint256(uint128(m.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
+        return m.claim(tokenId, address(0));
+    }
+
     // ── Tests ─────────────────────────────────────────────────────────────────
 
     /// @notice Test full lifecycle: Create → Trade → Resolve → Claim → Withdraw
@@ -138,8 +178,6 @@ contract MarketLifecycleTest is Test {
         address marketAddress = _cm(POOL_BALANCE, 0, 100, 10, 50, 2000);
         
         LMSRMarket market = LMSRMarket(marketAddress);
-        uint256 marketId = market.marketId();
-        
         // Verify market initialized correctly
         assertEq(market.poolBalance(), POOL_BALANCE);
         assertEq(market.bucketCount(), 10);
@@ -151,30 +189,33 @@ contract MarketLifecycleTest is Test {
         // Alice buys bucket 7 (70-80 range) - bullish on Bitcoin at $75k
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT);
-        uint256 aliceShares = market.buyShares(7, TRADE_AMOUNT, 0);
+        uint256 aliceShares = _buyBucket(market, 7, TRADE_AMOUNT, 0);
         vm.stopPrank();
-        
+
         assertGt(aliceShares, 0, "Alice should receive shares");
-        
+
         // Bob buys bucket 5 (50-60 range) - moderately bullish at $55k
         vm.startPrank(bob);
         usdc.approve(address(market), TRADE_AMOUNT);
-        uint256 bobShares = market.buyShares(5, TRADE_AMOUNT, 0);
+        uint256 bobShares = _buyBucket(market, 5, TRADE_AMOUNT, 0);
         vm.stopPrank();
-        
+
         assertGt(bobShares, 0, "Bob should receive shares");
-        
+
         // Charlie buys bucket 3 (30-40 range) - bearish at $35k
         vm.startPrank(charlie);
         usdc.approve(address(market), TRADE_AMOUNT);
-        uint256 charlieShares = market.buyShares(3, TRADE_AMOUNT, 0);
+        uint256 charlieShares = _buyBucket(market, 3, TRADE_AMOUNT, 0);
         vm.stopPrank();
         
         assertGt(charlieShares, 0, "Charlie should receive shares");
         
         // Verify pool balance increased from trading
+        // Pool now receives netCost + lpFee = costUSDC - protocolFee
+        // Fee = 0.5% (50 bps), protocolFee = 20% of fee = 0.1% (10 bps of trade)
+        // So pool increase per trade = trade * 9990 / 10000
         uint256 poolAfterTrades = market.poolBalance();
-        uint256 expectedIncrease = (TRADE_AMOUNT * 3) * 995 / 1000; // Net after 0.5% fee
+        uint256 expectedIncrease = (TRADE_AMOUNT * 3) * 9990 / 10000;
         assertApproxEqAbs(poolAfterTrades, POOL_BALANCE + expectedIncrease, 10, "Pool should grow");
         
         // === PHASE 3: Resolution ===
@@ -188,32 +229,38 @@ contract MarketLifecycleTest is Test {
         // === PHASE 4: Claims ===
         
         // Alice claims her winnings (she won!)
-        (uint256 bucket7Shares,,) = market.buckets(7);
+        (uint256 bucket7Shares,,,) = market.buckets(7);
         uint256 aliceBalanceBefore = usdc.balanceOf(alice);
-        
-        vm.prank(alice);
-        market.claimWinnings(7, aliceShares);
-        
+
+        vm.startPrank(alice);
+        _claimBucket(market, 7);
+        vm.stopPrank();
+
         uint256 aliceBalanceAfter = usdc.balanceOf(alice);
         uint256 alicePayout = aliceBalanceAfter - aliceBalanceBefore;
-        
+
         // Alice should receive close to $1 per share (in USDC 6 decimals)
-        // aliceShares is in WAD (18 decimals), payout should be fromWad(aliceShares)
         assertGt(alicePayout, 0, "Alice should receive payout");
-        
+
         // Bob and Charlie lost (wrong buckets)
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        vm.prank(bob);
-        market.claimWinnings(5, bobShares);
-        
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        vm.prank(charlie);
-        market.claimWinnings(3, charlieShares);
+        {
+            uint256 bobTokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(5)) << 64) | uint256(uint64(5));
+            vm.expectRevert(LMSRMarket.RangeNotWinner.selector);
+            vm.prank(bob);
+            market.claim(bobTokenId, address(0));
+        }
+
+        {
+            uint256 charlieTokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(3)) << 64) | uint256(uint64(3));
+            vm.expectRevert(LMSRMarket.RangeNotWinner.selector);
+            vm.prank(charlie);
+            market.claim(charlieTokenId, address(0));
+        }
         
         // === PHASE 5: LP Withdrawal ===
         
         uint256 creatorBalanceBefore = usdc.balanceOf(creator);
-        (int256 profitBefore, int256 roiBefore, uint256 feesEarned) = market.getLPProfitability();
+        (int256 profitBefore,, uint256 feesEarned) = market.getLPProfitability();
         
         vm.prank(creator);
         market.withdrawLP();
@@ -232,11 +279,15 @@ contract MarketLifecycleTest is Test {
         // Verify protocol fees were collected
         assertGt(market.feesCollectedProtocol(), 0, "Protocol should collect fees");
         
-        // Verify final state: pool has exactly enough for remaining claims
-        // Shares are now in 6 decimals, payout = shares (both 6 decimals)
-        uint256 remainingWinningShares = bucket7Shares - aliceShares;
-        uint256 expectedPoolBalance = remainingWinningShares; // Direct conversion (both 6 decimals)
-        assertApproxEqAbs(market.poolBalance(), expectedPoolBalance, 10, "Pool should have exact amount for remaining claims");
+        // Verify final state: pool has exactly enough for remaining trader claims
+        // After Alice claimed, remaining shares = bucket7Shares - aliceShares = initialShares
+        // With new accounting, traderOwed = max(0, remainingShares - initialShares) = 0
+        // So poolBalance should be 0 (all remaining shares are LP's initial allocation)
+        (uint256 bucket7SharesAfterClaim, uint256 bucket7InitShares,,) = market.buckets(7);
+        uint256 remainingTraderClaims = bucket7SharesAfterClaim > bucket7InitShares
+            ? bucket7SharesAfterClaim - bucket7InitShares
+            : 0;
+        assertApproxEqAbs(market.poolBalance(), remainingTraderClaims, 10, "Pool should have exact amount for remaining trader claims");
     }
     
     /// @notice Test LP profit scenario with high trading volume
@@ -254,21 +305,21 @@ contract MarketLifecycleTest is Test {
         // Alice buys bucket 0
         vm.startPrank(alice);
         usdc.approve(address(market), tradeAmount * 2);
-        market.buyShares(0, tradeAmount, 0);
-        market.buyShares(1, tradeAmount, 0);
+        _buyBucket(market, 0, tradeAmount, 0);
+        _buyBucket(market, 1, tradeAmount, 0);
         vm.stopPrank();
-        
+
         // Bob buys bucket 2
         vm.startPrank(bob);
         usdc.approve(address(market), tradeAmount * 2);
-        market.buyShares(2, tradeAmount, 0);
-        market.buyShares(3, tradeAmount, 0);
+        _buyBucket(market, 2, tradeAmount, 0);
+        _buyBucket(market, 3, tradeAmount, 0);
         vm.stopPrank();
-        
+
         // Charlie buys bucket 4
         vm.startPrank(charlie);
         usdc.approve(address(market), tradeAmount);
-        market.buyShares(4, tradeAmount, 0);
+        _buyBucket(market, 4, tradeAmount, 0);
         vm.stopPrank();
         
         // Total volume: $750, fees: ~$3.75
@@ -278,8 +329,8 @@ contract MarketLifecycleTest is Test {
         market.resolveMarket(20);
         
         // Check LP profitability before withdrawal
-        (int256 profit, int256 roi, uint256 feesEarned) = market.getLPProfitability();
-        
+        (,, uint256 feesEarned) = market.getLPProfitability();
+
         // With distributed trading and reasonable resolution, LP should profit
         assertGt(feesEarned, 0, "Fees should be collected");
         
@@ -307,16 +358,17 @@ contract MarketLifecycleTest is Test {
         
         vm.startPrank(alice);
         usdc.approve(address(market), smallTradeAmount);
-        uint256 aliceShares = market.buyShares(0, smallTradeAmount, 0);
+        _buyBucket(market, 0, smallTradeAmount, 0);
         vm.stopPrank();
-        
+
         // Resolve with value 0 (bucket 0, Alice wins)
         vm.prank(creator);
         market.resolveMarket(0);
-        
+
         // Alice claims all winnings
-        vm.prank(alice);
-        market.claimWinnings(0, aliceShares);
+        vm.startPrank(alice);
+        _claimBucket(market, 0);
+        vm.stopPrank();
         
         // Check LP profitability
         (int256 profit, int256 roi,) = market.getLPProfitability();
@@ -343,19 +395,19 @@ contract MarketLifecycleTest is Test {
         // Alice buys bucket 0
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT);
-        uint256 aliceShares = market.buyShares(0, TRADE_AMOUNT, 0);
+        uint256 aliceShares = _buyBucket(market, 0, TRADE_AMOUNT, 0);
         vm.stopPrank();
-        
+
         // Bob buys bucket 1
         vm.startPrank(bob);
         usdc.approve(address(market), TRADE_AMOUNT);
-        uint256 bobShares = market.buyShares(1, TRADE_AMOUNT, 0);
+        uint256 bobShares = _buyBucket(market, 1, TRADE_AMOUNT, 0);
         vm.stopPrank();
-        
+
         // Charlie buys bucket 2
         vm.startPrank(charlie);
         usdc.approve(address(market), TRADE_AMOUNT);
-        uint256 charlieShares = market.buyShares(2, TRADE_AMOUNT, 0);
+        uint256 charlieShares = _buyBucket(market, 2, TRADE_AMOUNT, 0);
         vm.stopPrank();
         
         // Verify all received shares
@@ -373,20 +425,27 @@ contract MarketLifecycleTest is Test {
         market.resolveMarket(33);
         
         // Only Bob can claim
-        vm.prank(bob);
-        market.claimWinnings(1, bobShares);
-        
+        vm.startPrank(bob);
+        _claimBucket(market, 1);
+        vm.stopPrank();
+
         // Bob should profit
         assertGt(usdc.balanceOf(bob), bobInitial, "Bob should profit as winner");
-        
+
         // Alice and Charlie cannot claim
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        vm.prank(alice);
-        market.claimWinnings(0, aliceShares);
-        
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        vm.prank(charlie);
-        market.claimWinnings(2, charlieShares);
+        {
+            uint256 aliceTokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(0)) << 64) | uint256(uint64(0));
+            vm.expectRevert(LMSRMarket.RangeNotWinner.selector);
+            vm.prank(alice);
+            market.claim(aliceTokenId, address(0));
+        }
+
+        {
+            uint256 charlieTokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(2)) << 64) | uint256(uint64(2));
+            vm.expectRevert(LMSRMarket.RangeNotWinner.selector);
+            vm.prank(charlie);
+            market.claim(charlieTokenId, address(0));
+        }
     }
     
     /// @notice Test fee distribution (80% LP, 20% protocol)
@@ -403,9 +462,9 @@ contract MarketLifecycleTest is Test {
         
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT * 3);
-        market.buyShares(0, TRADE_AMOUNT, 0);
-        market.buyShares(1, TRADE_AMOUNT, 0);
-        market.buyShares(2, TRADE_AMOUNT, 0);
+        _buyBucket(market, 0, TRADE_AMOUNT, 0);
+        _buyBucket(market, 1, TRADE_AMOUNT, 0);
+        _buyBucket(market, 2, TRADE_AMOUNT, 0);
         totalTraded = TRADE_AMOUNT * 3;
         vm.stopPrank();
         
@@ -439,9 +498,9 @@ contract MarketLifecycleTest is Test {
         // Trade and resolve
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT);
-        market.buyShares(0, TRADE_AMOUNT, 0);
+        _buyBucket(market, 0, TRADE_AMOUNT, 0);
         vm.stopPrank();
-        
+
         vm.prank(creator);
         market.resolveMarket(50); // value 50 = bucket 1 (width 50)
         
@@ -471,15 +530,16 @@ contract MarketLifecycleTest is Test {
         // Buy trades
         vm.startPrank(alice);
         usdc.approve(address(market), TRADE_AMOUNT * 2);
-        uint256 aliceBucket0Shares = market.buyShares(0, TRADE_AMOUNT, 0);
-        market.buyShares(1, TRADE_AMOUNT, 0);
+        uint256 aliceBucket0Shares = _buyBucket(market, 0, TRADE_AMOUNT, 0);
+        _buyBucket(market, 1, TRADE_AMOUNT, 0);
         vm.stopPrank();
-        
+
         assertEq(market.totalVolume(), TRADE_AMOUNT * 2, "Volume should track buys");
-        
+
         // Sell trade
-        vm.prank(alice);
-        uint256 payout = market.sellShares(0, aliceBucket0Shares / 2, 0);
+        vm.startPrank(alice);
+        _sellBucket(market, 0, aliceBucket0Shares / 2, 0);
+        vm.stopPrank();
         
         // Volume includes both buy and sell amounts
         assertGt(market.totalVolume(), TRADE_AMOUNT * 2, "Volume should include sells");

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
@@ -38,6 +38,20 @@ contract BenchmarkDiversifiedBucketsTest is Test {
             scheduledResolutionTime: 0,
             minBetSize: 0
         });
+    }
+
+    function _buyBucket(LMSRMarket m, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = bucketId * m.bucketWidth();
+        return m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _computeSumExp(LMSRMarket m) internal view returns (uint256 sumExp) {
+        uint256 n = m.bucketCount();
+        for (uint256 i = 0; i < n; i++) {
+            (uint256 s,,,) = m.buckets(i);
+            uint256 r = ((s + m.PHANTOM_SHARES()) * m.WAD()) / m.alpha();
+            sumExp += r.exp();
+        }
     }
 
     function test_report_diversified_buys_2_5_10() public {
@@ -92,19 +106,19 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         _logScenarioState("2b", market, 0, "init", 0, 0);
 
         uint256 out;
-        out = market.buyShares(0, 250_000000, 0);
+        out = _buyBucket(market, 0, 250_000000, 0);
         _logScenarioState("2b", market, 1, "single:b0", 250_000000, out);
 
-        out = market.buyShares(1, 300_000000, 0);
+        out = _buyBucket(market, 1, 300_000000, 0);
         _logScenarioState("2b", market, 2, "single:b1", 300_000000, out);
 
-        out = market.buySharesRange(0, 2, 400_000000, 0, 0); // 2-bucket range
+        out = market.buySharesRange(0, 2, 400_000000, 0, 0, address(0)); // 2-bucket range
         _logScenarioState("2b", market, 3, "range:0-2(len2)", 400_000000, out);
 
-        out = market.buyShares(1, 500_000000, 0);
+        out = _buyBucket(market, 1, 500_000000, 0);
         _logScenarioState("2b", market, 4, "single:b1", 500_000000, out);
 
-        out = market.buySharesRange(0, 2, 350_000000, 0, 0);
+        out = market.buySharesRange(0, 2, 350_000000, 0, 0, address(0));
         _logScenarioState("2b", market, 5, "range:0-2(len2)", 350_000000, out);
 
         vm.stopPrank();
@@ -126,22 +140,22 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         _logScenarioState("5b", market, 0, "init", 0, 0);
 
         uint256 out;
-        out = market.buyShares(1, 200_000000, 0);
+        out = _buyBucket(market, 1, 200_000000, 0);
         _logScenarioState("5b", market, 1, "single:b1", 200_000000, out);
 
-        out = market.buySharesRange(1, 3, 250_000000, 0, 0); // len 2
+        out = market.buySharesRange(1, 3, 250_000000, 0, 0, address(0)); // len 2
         _logScenarioState("5b", market, 2, "range:1-3(len2)", 250_000000, out);
 
-        out = market.buySharesRange(0, 3, 300_000000, 0, 0); // len 3
+        out = market.buySharesRange(0, 3, 300_000000, 0, 0, address(0)); // len 3
         _logScenarioState("5b", market, 3, "range:0-3(len3)", 300_000000, out);
 
-        out = market.buyShares(4, 350_000000, 0);
+        out = _buyBucket(market, 4, 350_000000, 0);
         _logScenarioState("5b", market, 4, "single:b4", 350_000000, out);
 
-        out = market.buySharesRange(1, 5, 400_000000, 0, 0); // len 4
+        out = market.buySharesRange(1, 5, 400_000000, 0, 0, address(0)); // len 4
         _logScenarioState("5b", market, 5, "range:1-5(len4)", 400_000000, out);
 
-        out = market.buySharesRange(0, 5, 500_000000, 0, 0); // len 5
+        out = market.buySharesRange(0, 5, 500_000000, 0, 0, address(0)); // len 5
         _logScenarioState("5b", market, 6, "range:0-5(len5)", 500_000000, out);
 
         vm.stopPrank();
@@ -162,27 +176,27 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         _logScenarioStateWithAlpha(scenario, market, 0, "init", 0, 0);
 
         uint256 out;
-        out = market.buyShares(1, 200_000000, 0);
+        out = _buyBucket(market, 1, 200_000000, 0);
         _logScenarioStateWithAlpha(scenario, market, 1, "single:b1", 200_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(1, 3, 250_000000, 0, 0); // len 2
+        out = market.buySharesRange(1, 3, 250_000000, 0, 0, address(0)); // len 2
         _logScenarioStateWithAlpha(scenario, market, 2, "range:1-3(len2)", 250_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(0, 3, 300_000000, 0, 0); // len 3
+        out = market.buySharesRange(0, 3, 300_000000, 0, 0, address(0)); // len 3
         _logScenarioStateWithAlpha(scenario, market, 3, "range:0-3(len3)", 300_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buyShares(4, 350_000000, 0);
+        out = _buyBucket(market, 4, 350_000000, 0);
         _logScenarioStateWithAlpha(scenario, market, 4, "single:b4", 350_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(1, 5, 400_000000, 0, 0); // len 4
+        out = market.buySharesRange(1, 5, 400_000000, 0, 0, address(0)); // len 4
         _logScenarioStateWithAlpha(scenario, market, 5, "range:1-5(len4)", 400_000000, out);
         if (withDecay) _advanceDecayOneDay(market);
 
-        out = market.buySharesRange(0, 5, 500_000000, 0, 0); // len 5
+        out = market.buySharesRange(0, 5, 500_000000, 0, 0, address(0)); // len 5
         _logScenarioStateWithAlpha(scenario, market, 6, "range:0-5(len5)", 500_000000, out);
 
         vm.stopPrank();
@@ -205,25 +219,25 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         _logScenarioState("10b", market, 0, "init", 0, 0);
 
         uint256 out;
-        out = market.buyShares(2, 150_000000, 0);
+        out = _buyBucket(market, 2, 150_000000, 0);
         _logScenarioState("10b", market, 1, "single:b2", 150_000000, out);
 
-        out = market.buySharesRange(2, 4, 180_000000, 0, 0); // len 2
+        out = market.buySharesRange(2, 4, 180_000000, 0, 0, address(0)); // len 2
         _logScenarioState("10b", market, 2, "range:2-4(len2)", 180_000000, out);
 
-        out = market.buySharesRange(4, 7, 220_000000, 0, 0); // len 3
+        out = market.buySharesRange(4, 7, 220_000000, 0, 0, address(0)); // len 3
         _logScenarioState("10b", market, 3, "range:4-7(len3)", 220_000000, out);
 
-        out = market.buySharesRange(1, 5, 260_000000, 0, 0); // len 4
+        out = market.buySharesRange(1, 5, 260_000000, 0, 0, address(0)); // len 4
         _logScenarioState("10b", market, 4, "range:1-5(len4)", 260_000000, out);
 
-        out = market.buySharesRange(3, 8, 300_000000, 0, 0); // len 5
+        out = market.buySharesRange(3, 8, 300_000000, 0, 0, address(0)); // len 5
         _logScenarioState("10b", market, 5, "range:3-8(len5)", 300_000000, out);
 
-        out = market.buyShares(9, 350_000000, 0);
+        out = _buyBucket(market, 9, 350_000000, 0);
         _logScenarioState("10b", market, 6, "single:b9", 350_000000, out);
 
-        out = market.buySharesRange(0, 5, 280_000000, 0, 0); // len 5
+        out = market.buySharesRange(0, 5, 280_000000, 0, 0, address(0)); // len 5
         _logScenarioState("10b", market, 7, "range:0-5(len5)", 280_000000, out);
 
         vm.stopPrank();
@@ -235,31 +249,46 @@ contract BenchmarkDiversifiedBucketsTest is Test {
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────────
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function _deployMarket(uint256 bucketCount, uint256 marketId)
         internal
         returns (LMSRMarket market, MockUSDC usdc)
     {
         usdc = new MockUSDC();
 
-        uint256[] memory ranges = new uint256[](bucketCount + 1);
-        for (uint256 i = 0; i <= bucketCount; i++) {
-            ranges[i] = i;
-        }
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(bucketCount, INITIAL_LIQUIDITY);
 
-        market = new LMSRMarket(
-            marketId,
-            CREATOR,
-            address(0xFACA),
-            address(usdc),
-            address(0),
-            INITIAL_LIQUIDITY / _isqrt(bucketCount),
-            INITIAL_LIQUIDITY,
-            ranges,
-            0,
-            0,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: marketId,
+                creator: CREATOR,
+                factory: address(0xFACA),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: INITIAL_LIQUIDITY / _isqrt(bucketCount),
+                poolBalance: INITIAL_LIQUIDITY,
+                bucketWidth: 1,
+                maxBucketId: // bucketWidth
+            bucketCount - 1,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: 0,
+                protocolFeeBps: 0,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
 
         usdc.mint(address(market), INITIAL_LIQUIDITY);
         usdc.mint(TRADER, TRADER_BANKROLL);
@@ -309,7 +338,7 @@ contract BenchmarkDiversifiedBucketsTest is Test {
         uint256 buckets = market.bucketCount();
         for (uint256 i = 0; i < buckets; i++) {
             uint256 p = _spotProbability(market, i);
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             string memory line = string.concat(
                 "final=", scenario,
                 "|bucket=", vm.toString(i),
@@ -333,17 +362,17 @@ contract BenchmarkDiversifiedBucketsTest is Test {
     }
 
     function _spotProbability(LMSRMarket market, uint256 bucketId) internal view returns (uint256) {
-        (uint256 shares,,) = market.buckets(bucketId);
+        (uint256 shares,,,) = market.buckets(bucketId);
         uint256 ratio = ((shares + market.PHANTOM_SHARES()) * market.WAD()) / market.alpha();
         uint256 bucketExp = ratio.exp();
-        uint256 sumExp = market.getCachedSumExp();
+        uint256 sumExp = _computeSumExp(market);
         return (bucketExp * 1e18) / sumExp;
     }
 
     function _liability(LMSRMarket market) internal view returns (uint256 maxShares) {
         uint256 buckets = market.bucketCount();
         for (uint256 i = 0; i < buckets; i++) {
-            (uint256 shares,,) = market.buckets(i);
+            (uint256 shares,,,) = market.buckets(i);
             if (shares > maxShares) {
                 maxShares = shares;
             }

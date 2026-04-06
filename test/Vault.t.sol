@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -19,10 +19,7 @@ contract VaultTest is Test {
     LMSRMarket market1;
     LMSRMarket market2;
 
-    // 4-bucket market (ranges 0-25-50-75-100)
-    uint256[] buckets4;
-    // 10-bucket market (ranges 0-10-20-...-100)
-    uint256[] buckets10;
+    // Bucket params for 4-bucket and 10-bucket markets
 
     uint256 constant SEED = 1_000_000000;   // $1k seed per market (from creator)
 
@@ -42,16 +39,9 @@ contract VaultTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
 
-        // bucket arrays
-        buckets4 = new uint256[](5);
-        for (uint256 i = 0; i <= 4; i++) buckets4[i] = i * 25;
-
-        buckets10 = new uint256[](11);
-        for (uint256 i = 0; i <= 10; i++) buckets10[i] = i * 10;
-
         // Deploy two markets seeded by creator
-        market1 = _deployMarket(1, buckets4,  SEED);
-        market2 = _deployMarket(2, buckets10, SEED);
+        market1 = _deployMarket(1, 4, 25, SEED);
+        market2 = _deployMarket(2, 10, 10, SEED);
 
         // Deploy vault (admin-owned)
         vm.prank(admin);
@@ -59,6 +49,7 @@ contract VaultTest is Test {
 
         // Register markets and point them at vault
         vm.startPrank(admin);
+        vault.setDepositsEnabled(true);
         vault.registerMarket(address(market1));
         vault.registerMarket(address(market2));
         vm.stopPrank();
@@ -73,15 +64,41 @@ contract VaultTest is Test {
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    function _deployMarket(uint256 id, uint256[] memory ranges, uint256 seed)
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
+    function _deployMarket(uint256 id, uint256 numBuckets, uint256 bw, uint256 seed)
         internal returns (LMSRMarket m)
     {
-        uint256 numBuckets = ranges.length - 1;
         uint256 _alpha = seed / _isqrt(numBuckets);
-        m = new LMSRMarket(
-            id, creator, address(0xFACE), address(usdc), address(0),
-            _alpha, seed, ranges, 100, 2000, _defaultMetadata(), address(0xFEE)
-        );
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(numBuckets, seed);
+        m = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: id,
+                creator: creator,
+                factory: address(0xFACE),
+                usdcToken: address(usdc),
+                positionNFT: address(0),
+                alpha: _alpha,
+                poolBalance: seed,
+                bucketWidth: bw,
+                maxBucketId: numBuckets - 1,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 100,
+                protocolFeeBps: 2000,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
         usdc.mint(address(m), seed);
     }
 
@@ -106,7 +123,8 @@ contract VaultTest is Test {
         usdc.mint(trader, amount);
         vm.startPrank(trader);
         usdc.approve(address(m), amount);
-        m.buyShares(bucketId, amount, 0);
+        uint256 lower = bucketId * m.bucketWidth();
+        m.buySharesRange(lower, lower + m.bucketWidth(), amount, 0, 0, address(0));
         vm.stopPrank();
     }
 
@@ -118,8 +136,8 @@ contract VaultTest is Test {
         uint256 amount = 5_000_000000;
         _lpDeposit(lp1, amount);
 
-        // First deposit: shares == assets (both in 6 dec, ERC4626 standard)
-        assertEq(vault.balanceOf(lp1), amount, "first LP shares should equal deposit");
+        // With _decimalsOffset(6), shares = assets * 1e6 for first depositor (virtual offset)
+        assertEq(vault.balanceOf(lp1), amount * 1e6, "first LP shares = deposit * 1e6 (decimals offset)");
         assertEq(vault.totalAssets(), amount, "totalAssets = vault liquid (no deployments yet)");
     }
 
@@ -468,9 +486,10 @@ contract VaultTest is Test {
 
         vault.harvestResolved(address(market1));
 
-        // After harvest: market cache zeroed, vault liquid increased by LP residual
-        // totalAssets should be roughly the same (capital moved back to vault)
-        assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest, 2, "totalAssets approx unchanged after harvest");
+        // After harvest: market cache zeroed, vault liquid increased by LP residual.
+        // _claimableFromMarket already accounted for initial shares recovery,
+        // so totalAssets should remain approximately unchanged after harvest.
+        assertApproxEqAbs(vault.totalAssets(), taBeforeHarvest, 2, "totalAssets stable after harvest (cache already included initial shares)");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -498,7 +517,7 @@ contract VaultTest is Test {
 
     function test_lmsrMarket_withdrawLP_byCreatorStillWorks() public {
         // Create a market without vault to test creator path
-        LMSRMarket noVaultMarket = _deployMarket(99, buckets4, 1_000_000000);
+        LMSRMarket noVaultMarket = _deployMarket(99, 4, 25, 1_000_000000);
 
         vm.prank(creator);
         noVaultMarket.resolveMarket(0); // value 0 = bucket 0

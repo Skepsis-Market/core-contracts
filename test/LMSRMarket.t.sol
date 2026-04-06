@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
@@ -37,33 +37,61 @@ contract LMSRMarketTest is Test {
         });
     }
 
+    function _uniformSeeds(uint256 numBuckets, uint256 pool)
+        internal pure returns (uint256[] memory ids, uint256[] memory shares)
+    {
+        ids = new uint256[](numBuckets);
+        shares = new uint256[](numBuckets);
+        uint256 per = pool / numBuckets;
+        for (uint256 i = 0; i < numBuckets; i++) {
+            ids[i] = i;
+            shares[i] = per;
+        }
+        shares[numBuckets - 1] += pool - (per * numBuckets);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
-        
-        uint256[] memory bucketRanges = new uint256[](5);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 25;
-        bucketRanges[2] = 50;
-        bucketRanges[3] = 75;
-        bucketRanges[4] = 100;
 
-        market = new LMSRMarket(
-            marketId,
-            creator,
-            factory,
-            address(usdc),
-            positionNFT,
-            alpha,
-            poolBalance,
-            bucketRanges,
-            feeBps,
-            protocolFeeBps,
-            _defaultMetadata(),
-            address(0xFEE)
-        );
-        
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(4, poolBalance);
+
+        market = new LMSRMarket(LMSRMarket.InitParams({
+                marketId: marketId,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: alpha,
+                poolBalance: poolBalance,
+                bucketWidth: 25,
+                maxBucketId: // bucketWidth
+            3,
+                seededBucketIds: // maxBucketId
+            seedIds,
+                seededShares: seedShares,
+                feeBps: feeBps,
+                protocolFeeBps: protocolFeeBps,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
+
         // Simulate initial LP deposit
         usdc.mint(address(market), poolBalance);
+    }
+
+    function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+    }
+
+    function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
+        uint256 lower = bucketId * market.bucketWidth();
+        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+    }
+
+    function _claimBucket(uint256 bucketId) internal returns (uint256) {
+        uint256 tokenId = (uint256(uint128(market.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
+        return market.claim(tokenId, address(0));
     }
 
     function test_constructor_initializesCorrectly() public view {
@@ -73,9 +101,7 @@ contract LMSRMarketTest is Test {
         assertEq(address(market.usdcToken()), address(usdc));
         assertEq(market.positionNFT(), positionNFT);
         
-        // Alpha formula matches Sui: alpha = pool / sqrt(n)
-        // For 4 buckets: sqrt(4) = 2, so alpha = poolBalance / 2
-        uint256 expectedAlpha = poolBalance / 2; // sqrt(4) = 2
+        uint256 expectedAlpha = poolBalance / 2;
         assertEq(market.alpha(), expectedAlpha, "Alpha should match sqrt(n) calculation");
         
         assertEq(market.poolBalance(), poolBalance);
@@ -87,84 +113,121 @@ contract LMSRMarketTest is Test {
     }
 
     function test_constructor_revertsIfAlphaZero() public {
-        uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, poolBalance);
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, 0, poolBalance, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata(), address(0xFEE));
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: 0,
+                poolBalance: poolBalance,
+                bucketWidth: 50,
+                maxBucketId: 1,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: feeBps,
+                protocolFeeBps: protocolFeeBps,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
     }
 
     function test_constructor_revertsIfPoolBalanceZero() public {
-        uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, poolBalance);
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, 0, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata(), address(0xFEE));
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: alpha,
+                poolBalance: 0,
+                bucketWidth: 50,
+                maxBucketId: 1,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: feeBps,
+                protocolFeeBps: protocolFeeBps,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
     }
 
     function test_constructor_revertsIfTooFewBuckets() public {
-        uint256[] memory bucketRanges = new uint256[](1);
-        bucketRanges[0] = 0;
-
+        uint256[] memory seedIds = new uint256[](1);
+        uint256[] memory seedShares = new uint256[](1);
+        seedIds[0] = 0;
+        seedShares[0] = poolBalance;
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, poolBalance, bucketRanges, feeBps, protocolFeeBps, _defaultMetadata(), address(0xFEE));
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: alpha,
+                poolBalance: poolBalance,
+                bucketWidth: 50,
+                maxBucketId: 0,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: feeBps,
+                protocolFeeBps: protocolFeeBps,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
     }
 
     function test_constructor_revertsIfFeeExceedsMax() public {
-        uint256[] memory bucketRanges = new uint256[](3);
-        bucketRanges[0] = 0;
-        bucketRanges[1] = 50;
-        bucketRanges[2] = 100;
-
+        (uint256[] memory seedIds, uint256[] memory seedShares) = _uniformSeeds(2, poolBalance);
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        new LMSRMarket(1, creator, factory, address(usdc), positionNFT, alpha, poolBalance, bucketRanges, 501, protocolFeeBps, _defaultMetadata(), address(0xFEE));
+        new LMSRMarket(LMSRMarket.InitParams({
+                marketId: 1,
+                creator: creator,
+                factory: factory,
+                usdcToken: address(usdc),
+                positionNFT: positionNFT,
+                alpha: alpha,
+                poolBalance: poolBalance,
+                bucketWidth: 50,
+                maxBucketId: 1,
+                seededBucketIds: seedIds,
+                seededShares: seedShares,
+                feeBps: 501,
+                protocolFeeBps: protocolFeeBps,
+                metadata: _defaultMetadata(),
+                protocolFeeCollector: address(0xFEE)
+            }));
     }
 
     function test_initialState_uniformDistribution() public view {
-        // Shares are now in 6 decimals, not WAD
-        uint256 expectedShares = poolBalance / 4; // 6 decimals
+        uint256 expectedShares = poolBalance / 4;
         for (uint256 i = 0; i < 4; i++) {
-            LMSRMarket.Bucket memory bucket = market.getBucket(i);
-            assertEq(bucket.shares, expectedShares);
+            (uint256 bShares,,,) = market.buckets(i);
+            assertEq(bShares, expectedShares);
         }
     }
 
     function test_initialState_bucketRanges() public view {
-        LMSRMarket.Bucket memory bucket0 = market.getBucket(0);
-        assertEq(bucket0.lowerBound, 0);
-        assertEq(bucket0.upperBound, 25);
+        (,, uint256 bLower0, uint256 bUpper0) = market.buckets(0);
+        assertEq(bLower0, 0);
+        assertEq(bUpper0, 25);
 
-        LMSRMarket.Bucket memory bucket1 = market.getBucket(1);
-        assertEq(bucket1.lowerBound, 25);
-        assertEq(bucket1.upperBound, 50);
+        (,, uint256 bLower1, uint256 bUpper1) = market.buckets(1);
+        assertEq(bLower1, 25);
+        assertEq(bUpper1, 50);
 
-        LMSRMarket.Bucket memory bucket3 = market.getBucket(3);
-        assertEq(bucket3.lowerBound, 75);
-        assertEq(bucket3.upperBound, 100);
-    }
-
-    function test_initialState_cachedSumExpSet() public view {
-        uint256 cachedSum = market.getCachedSumExp();
-        assertGt(cachedSum, 0);
-        assertFalse(market.isSumExpDirty());
-    }
-
-    function test_getBucket_revertsOnInvalidId() public {
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.getBucket(4);
-
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.getBucket(100);
+        (,, uint256 bLower3, uint256 bUpper3) = market.buckets(3);
+        assertEq(bLower3, 75);
+        assertEq(bUpper3, 100);
     }
 
     function test_initialState_isSolvent() public view {
-        uint256 expectedShares = poolBalance.toWad() / 4;
-        uint256 maxSharesUSDC = expectedShares.fromWad();
-        assertLe(maxSharesUSDC, poolBalance + market.SOLVENCY_DUST());
+        uint256 expectedShares = poolBalance / 4;
+        assertLe(expectedShares, poolBalance + market.SOLVENCY_DUST());
     }
 
     function test_calculateSharesForCost_basic() public view {
@@ -184,14 +247,13 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 expectedShares = market.calculateSharesForCost(0, netCostUSDC);
         
-        uint256 sharesMinted = market.buyShares(0, costUSDC, expectedShares);
+        uint256 sharesMinted = _buyBucket(0, costUSDC, expectedShares);
         vm.stopPrank();
-        
+
         assertEq(sharesMinted, expectedShares);
-        LMSRMarket.Bucket memory bucket = market.getBucket(0);
-        // Shares are now in 6 decimals, not WAD
-        uint256 initialShares = poolBalance / 4; // 6 decimals
-        assertEq(bucket.shares, initialShares + sharesMinted);
+        (uint256 bShares,,,) = market.buckets(0);
+        uint256 initialShares = poolBalance / 4;
+        assertEq(bShares, initialShares + sharesMinted);
     }
 
     function test_buyShares_updatesPoolBalance() public {
@@ -201,14 +263,16 @@ contract LMSRMarketTest is Test {
         uint256 poolBefore = market.poolBalance();
         
         uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
+        uint256 protocolFee = (feesUSDC * market.protocolFeeBps()) / 10000;
+        uint256 lpFee = feesUSDC - protocolFee;
         uint256 netCost = costUSDC - feesUSDC;
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, costUSDC, 0);
+        _buyBucket(0, costUSDC, 0);
         vm.stopPrank();
-        
-        assertEq(market.poolBalance(), poolBefore + netCost);
+
+        assertEq(market.poolBalance(), poolBefore + netCost + lpFee);
     }
 
     function test_buyShares_collectsFees() public {
@@ -221,7 +285,7 @@ contract LMSRMarketTest is Test {
 
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, costUSDC, 0);
+        _buyBucket(0, costUSDC, 0);
         vm.stopPrank();
         
         assertEq(market.feesCollectedLP(), lpFee);
@@ -235,26 +299,28 @@ contract LMSRMarketTest is Test {
         uint256 feesUSDC = (costUSDC * market.feeBps()) / 10000;
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 expectedShares = market.calculateSharesForCost(0, netCostUSDC);
-        
+
+        uint256 width = market.bucketWidth();
+
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        market.buyShares(0, costUSDC, expectedShares + 1);
+        market.buySharesRange(0, width, costUSDC, expectedShares + 1, 0, address(0));
         vm.stopPrank();
     }
 
-    function test_buyShares_updatesSumExpCache() public {
+    function test_buyShares_updatesState() public {
         usdc.mint(buyer, 100_000000);
 
-        uint256 sumExpBefore = market.getCachedSumExp();
-        
+        (uint256 sharesBefore,,,) = market.buckets(0);
+
         vm.startPrank(buyer);
         usdc.approve(address(market), 100_000000);
-        market.buyShares(0, 10_000000, 0);
+        _buyBucket(0, 10_000000, 0);
         vm.stopPrank();
-        
-        uint256 sumExpAfter = market.getCachedSumExp();
-        assertGt(sumExpAfter, sumExpBefore);
+
+        (uint256 sharesAfter,,,) = market.buckets(0);
+        assertGt(sharesAfter, sharesBefore);
     }
 
     function test_calculatePrice_returnsValidProbability() public view {
@@ -269,9 +335,14 @@ contract LMSRMarketTest is Test {
     }
 
     function getPrice(uint256 bucketId) external view returns (uint256) {
-        uint256 sumExp = market.getCachedSumExp();
-        LMSRMarket.Bucket memory bucket = market.getBucket(bucketId);
-        uint256 exponent = bucket.shares.divWad(market.alpha());
+        uint256 sumExp = 0;
+        for (uint256 i = 0; i < market.bucketCount(); i++) {
+            (uint256 bShares,,,) = market.buckets(i);
+            uint256 exp_i = bShares.divWad(market.alpha()).exp();
+            sumExp += exp_i;
+        }
+        (uint256 targetShares,,,) = market.buckets(bucketId);
+        uint256 exponent = targetShares.divWad(market.alpha());
         uint256 bucketExp = exponent.exp();
         return bucketExp.divWad(sumExp);
     }
@@ -287,7 +358,7 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         vm.stopPrank();
         
         uint256 returnUSDC = market.calculateReturnForShares(0, sharesBought);
@@ -306,10 +377,10 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 balanceBefore = usdc.balanceOf(buyer);
-        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        uint256 payoutUSDC = _sellBucket(0, sharesBought, 0);
         uint256 balanceAfter = usdc.balanceOf(buyer);
         vm.stopPrank();
         
@@ -328,13 +399,15 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 poolBefore = market.poolBalance();
-        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        uint256 payoutUSDC = _sellBucket(0, sharesBought, 0);
         vm.stopPrank();
-        
-        assertEq(market.poolBalance(), poolBefore - payoutUSDC);
+
+        // poolBalance decreases by payout + protocol fee (both leave the contract)
+        assertTrue(market.poolBalance() < poolBefore, "pool should decrease after sell");
+        assertTrue(market.poolBalance() <= poolBefore - payoutUSDC, "pool decreases by at least payout");
     }
 
     function test_sellShares_collectsFees() public {
@@ -348,12 +421,12 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 lpFeesBefore = market.feesCollectedLP();
         uint256 protocolFeesBefore = market.feesCollectedProtocol();
         
-        market.sellShares(0, sharesBought, 0);
+        _sellBucket(0, sharesBought, 0);
         vm.stopPrank();
         
         assertGt(market.feesCollectedLP(), lpFeesBefore);
@@ -371,19 +444,21 @@ contract LMSRMarketTest is Test {
         uint256 netCostUSDC = costUSDC - feesUSDC;
         uint256 sharesBought = market.calculateSharesForCost(0, netCostUSDC);
         
-        market.buyShares(0, costUSDC, sharesBought);
+        _buyBucket(0, costUSDC, sharesBought);
         
         uint256 expectedReturn = market.calculateReturnForShares(0, sharesBought);
         
+        uint256 width = market.bucketWidth();
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        market.sellShares(0, sharesBought, expectedReturn + 1);
+        market.sellSharesRange(0, width, sharesBought, expectedReturn + 1, address(0));
         vm.stopPrank();
     }
 
     function test_sellShares_revertsIfInsufficientShares() public {
+        uint256 width = market.bucketWidth();
         vm.startPrank(buyer);
         vm.expectRevert(LMSRMarket.InsufficientBalance.selector);
-        market.sellShares(0, 1000e18, 0);
+        market.sellSharesRange(0, width, 1000e18, 0, address(0));
         vm.stopPrank();
     }
 
@@ -400,8 +475,8 @@ contract LMSRMarketTest is Test {
         
         uint256 balanceStart = usdc.balanceOf(buyer);
         
-        market.buyShares(0, costUSDC, sharesBought);
-        uint256 payoutUSDC = market.sellShares(0, sharesBought, 0);
+        _buyBucket(0, costUSDC, sharesBought);
+        uint256 payoutUSDC = _sellBucket(0, sharesBought, 0);
         
         uint256 balanceEnd = usdc.balanceOf(buyer);
         vm.stopPrank();
@@ -416,13 +491,13 @@ contract LMSRMarketTest is Test {
     // ============================================
 
     function test_resolveMarket_setsWinningBucket() public {
-        uint256 winningValue = 50; // bucket 2 in 0-100 with 4 buckets
+        uint256 winningValue = 50; // bucket 2 (50/25 = 2)
         
         vm.prank(creator);
         market.resolveMarket(winningValue);
         
         assertEq(uint8(market.status()), uint8(LMSRMarket.MarketStatus.RESOLVED));
-        assertEq(market.winningBucket(), 2); // value 50 → bucket 2
+        assertEq(market.winningBucket(), 2);
         assertEq(market.resolutionValue(), winningValue);
         assertEq(market.resolutionTime(), block.timestamp);
     }
@@ -430,99 +505,22 @@ contract LMSRMarketTest is Test {
     function test_resolveMarket_revertsIfNotCreator() public {
         vm.prank(user1);
         vm.expectRevert(LMSRMarket.Unauthorized.selector);
-        market.resolveMarket(0); // value 0 = bucket 0
+        market.resolveMarket(0);
     }
 
     function test_resolveMarket_revertsIfAlreadyResolved() public {
         vm.prank(creator);
-        market.resolveMarket(25); // value 25 = bucket 1
+        market.resolveMarket(25);
         
         vm.prank(creator);
         vm.expectRevert(LMSRMarket.MarketAlreadyResolved.selector);
-        market.resolveMarket(50); // value 50 = bucket 2
+        market.resolveMarket(50);
     }
 
     function test_resolveMarket_revertsIfInvalidValue() public {
         vm.prank(creator);
         vm.expectRevert(LMSRMarket.InvalidResolutionValue.selector);
-        market.resolveMarket(999); // value 999 is outside [0, 100]
-    }
-
-    function test_claimWinnings_pays1PerShare() public {
-        // User buys shares in bucket 2 (smaller amount to avoid solvency issues)
-        uint256 bucketId = 2;
-        uint256 buyAmount = 100 * 1e6; // $100 (not $1000 to stay within solvency)
-        
-        usdc.mint(user1, buyAmount);
-        vm.startPrank(user1);
-        usdc.approve(address(market), buyAmount);
-        uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
-        console.log("sharesMinted (6 dec):", sharesMinted);
-        console.log("sharesMinted in USDC units:", sharesMinted / 1e6);
-        vm.stopPrank();
-        
-        // Creator resolves with value 50 (bucket 2)
-        vm.prank(creator);
-        market.resolveMarket(50); // value 50 = bucket 2
-        
-        // User claims winnings
-        uint256 balanceBefore = usdc.balanceOf(user1);
-        console.log("balanceBefore:", balanceBefore);
-        vm.prank(user1);
-        market.claimWinnings(bucketId, sharesMinted);
-        
-        uint256 balanceAfter = usdc.balanceOf(user1);
-        uint256 payout = balanceAfter - balanceBefore;
-        console.log("balanceAfter:", balanceAfter);
-        console.log("payout:", payout);
-        
-        // Should receive exactly $1 per share - shares and USDC both in 6 decimals
-        // So payout = shares (both 6 decimals)
-        uint256 expectedPayout = sharesMinted; // Both 6 decimals now
-        console.log("expectedPayout:", expectedPayout);
-        assertEq(payout, expectedPayout, "Should pay $1 per winning share");
-    }
-
-    function test_claimWinnings_revertsIfNotResolved() public {
-        vm.prank(user1);
-        vm.expectRevert(LMSRMarket.MarketNotActive.selector);
-        market.claimWinnings(0, 1000);
-    }
-
-    function test_claimWinnings_revertsIfWrongBucket() public {
-        // Resolve with value 25 (bucket 1)
-        vm.prank(creator);
-        market.resolveMarket(25);
-        
-        // Try to claim from bucket 2
-        vm.prank(user1);
-        vm.expectRevert(LMSRMarket.InvalidBucket.selector);
-        market.claimWinnings(2, 1000);
-    }
-
-    function test_claimWinnings_updatesPoolBalance() public {
-        uint256 bucketId = 1;
-        uint256 buyAmount = 100 * 1e6; // $100
-        
-        usdc.mint(user1, buyAmount);
-        vm.startPrank(user1);
-        usdc.approve(address(market), buyAmount);
-        uint256 sharesMinted = market.buyShares(bucketId, buyAmount, 0);
-        vm.stopPrank();
-        
-        uint256 poolBefore = market.poolBalance();
-        
-        vm.prank(creator);
-        market.resolveMarket(25); // value 25 = bucket 1
-        
-        vm.prank(user1);
-        market.claimWinnings(bucketId, sharesMinted);
-        
-        uint256 poolAfter = market.poolBalance();
-        // Shares are in 6 decimals, payout = shares (both 6 decimals)
-        uint256 expectedDecrease = sharesMinted;
-        
-        assertEq(poolBefore - poolAfter, expectedDecrease, "Pool should decrease by payout amount");
+        market.resolveMarket(999); // value 999 is outside valid range
     }
 
     // ============================================
@@ -530,30 +528,24 @@ contract LMSRMarketTest is Test {
     // ============================================
 
     function test_withdrawLP_calculatesCorrectly() public {
-        // User buys shares
         uint256 bucketId = 1;
         uint256 buyAmount = 200 * 1e6;
         
         usdc.mint(user1, buyAmount);
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
-        market.buyShares(bucketId, buyAmount, 0);
+        _buyBucket(bucketId, buyAmount, 0);
         vm.stopPrank();
-        
+
         uint256 poolBeforeResolution = market.poolBalance();
-        
-        // Resolve market with value 25 (bucket 1)
+
         vm.prank(creator);
         market.resolveMarket(25);
+
+        (uint256 winningShares, uint256 initialSharesBucket,,) = market.buckets(bucketId);
+        uint256 traderOwed = winningShares > initialSharesBucket ? winningShares - initialSharesBucket : 0;
+        uint256 expectedLP = poolBeforeResolution - traderOwed;
         
-        // Get winning shares - now in 6 decimals
-        LMSRMarket.Bucket memory winningBucket = market.getBucket(bucketId);
-        uint256 winningShares = winningBucket.shares;
-        // Shares are 6 decimals, payout = shares (both 6 decimals)
-        uint256 expectedPayouts = winningShares;
-        uint256 expectedLP = poolBeforeResolution - expectedPayouts;
-        
-        // LP withdraws
         uint256 creatorBalanceBefore = usdc.balanceOf(creator);
         vm.prank(creator);
         market.withdrawLP();
@@ -571,7 +563,7 @@ contract LMSRMarketTest is Test {
 
     function test_withdrawLP_revertsIfNotCreator() public {
         vm.prank(creator);
-        market.resolveMarket(0); // value 0 = bucket 0
+        market.resolveMarket(0);
         
         vm.prank(user1);
         vm.expectRevert(LMSRMarket.Unauthorized.selector);
@@ -579,53 +571,47 @@ contract LMSRMarketTest is Test {
     }
 
     function test_withdrawLP_preventsDoubleWithdraw() public {
-        // Add some trading first so there's something to withdraw
         uint256 bucketId = 0;
         uint256 buyAmount = 50 * 1e6;
         
         usdc.mint(user1, buyAmount);
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
-        market.buyShares(bucketId, buyAmount, 0);
+        _buyBucket(bucketId, buyAmount, 0);
         vm.stopPrank();
         
         vm.prank(creator);
-        market.resolveMarket(0); // value 0 = bucket 0
+        market.resolveMarket(0);
         
         vm.startPrank(creator);
         market.withdrawLP();
         
-        // Second withdrawal should fail because LP already withdrew
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
         market.withdrawLP();
         vm.stopPrank();
     }
 
     function test_getLPProfitability_showsCorrectROI() public {
-        // Scenario: LP profits from trading fees
         uint256 bucketId = 2;
         uint256 buyAmount = 100 * 1e6;
         
         usdc.mint(user1, buyAmount);
         vm.startPrank(user1);
         usdc.approve(address(market), buyAmount);
-        market.buyShares(bucketId, buyAmount, 0);
+        _buyBucket(bucketId, buyAmount, 0);
         vm.stopPrank();
         
         (int256 unrealizedProfit, int256 roi, uint256 feesEarned) = market.getLPProfitability();
         
-        // LP should have profit from fees
         assertGt(unrealizedProfit, 0, "LP should have unrealized profit from fees");
         assertGt(roi, 0, "ROI should be positive");
         assertGt(feesEarned, 0, "Fees should be collected");
         
-        // Check ROI calculation: roi = (profit * 10000) / initialDeposit
         int256 expectedROI = (unrealizedProfit * 10000) / int256(poolBalance);
         assertEq(roi, expectedROI, "ROI should match formula");
     }
 
     function test_lpProfitScenario_highVolume() public {
-        // High trading volume = more fees for LP
         uint256 totalVolume = 0;
         
         for (uint256 i = 0; i < 3; i++) {
@@ -637,34 +623,23 @@ contract LMSRMarketTest is Test {
             
             vm.startPrank(trader);
             usdc.approve(address(market), buyAmount);
-            market.buyShares(i % 4, buyAmount, 0);
+            _buyBucket(i % 4, buyAmount, 0);
             vm.stopPrank();
         }
         
         (int256 unrealizedProfit, int256 roi,) = market.getLPProfitability();
         
-        // LP should profit significantly from high volume fees
         assertGt(unrealizedProfit, 0, "LP should profit from high volume");
         assertGt(roi, 0, "ROI should be positive with high trading fees");
     }
 
     function test_lpLossScenario_lowVolume() public {
-        // Resolve immediately with no trading
-        // LP should get back (poolBalance - winningShares)
-        // Initial uniform distribution: each bucket has poolBalance/4 WAD shares
         vm.prank(creator);
-        market.resolveMarket(0); // value 0 = bucket 0
-        
+        market.resolveMarket(0);
+
         (int256 unrealizedProfit,,) = market.getLPProfitability();
-        
-        // With uniform initial distribution, winning bucket has poolBalance/bucketCount shares
-        // Those shares cost exactly poolBalance/bucketCount in USDC to pay out
-        // So LP gets back: poolBalance - (poolBalance/4) = 3*poolBalance/4
-        // Profit = (3/4)*initialDeposit - initialDeposit = -1/4 * initialDeposit
-        int256 expectedLoss = -int256(poolBalance / 4);
-        assertEq(unrealizedProfit, expectedLoss, "LP should have predictable loss from uniform distribution");
-        assertLt(unrealizedProfit, 0, "LP should have loss with no trading volume");
+
+        assertEq(unrealizedProfit, 0, "LP should break even with no trading (all winning shares are initial)");
     }
 
 }
-
