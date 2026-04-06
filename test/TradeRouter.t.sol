@@ -86,7 +86,7 @@ contract TradeRouterTest is Test {
 
     function test_buy_mintsNFTToUser() public {
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0, type(uint256).max);
 
         assertGt(shares, 0);
 
@@ -98,21 +98,21 @@ contract TradeRouterTest is Test {
     function test_buy_pullsUSDCFromUser() public {
         uint256 balBefore = usdc.balanceOf(trader);
         vm.prank(trader);
-        router.buy(market, 0, 25, 50_000000, 0, 0);
+        router.buy(market, 0, 25, 50_000000, 0, 0, type(uint256).max);
         assertEq(usdc.balanceOf(trader), balBefore - 50_000000);
     }
 
     function test_buy_routerHoldsNoFunds() public {
         vm.prank(trader);
-        router.buy(market, 0, 25, 50_000000, 0, 0);
+        router.buy(market, 0, 25, 50_000000, 0, 0, type(uint256).max);
         assertEq(usdc.balanceOf(address(router)), 0);
     }
 
     function test_buy_multipleBuysOneApproval() public {
         vm.startPrank(trader);
-        uint256 s1 = router.buy(market, 0, 25, 20_000000, 0, 0);
-        uint256 s2 = router.buy(market, 25, 50, 20_000000, 0, 0);
-        uint256 s3 = router.buy(market, 50, 75, 20_000000, 0, 0);
+        uint256 s1 = router.buy(market, 0, 25, 20_000000, 0, 0, type(uint256).max);
+        uint256 s2 = router.buy(market, 25, 50, 20_000000, 0, 0, type(uint256).max);
+        uint256 s3 = router.buy(market, 50, 75, 20_000000, 0, 0, type(uint256).max);
         vm.stopPrank();
 
         assertGt(s1, 0);
@@ -123,20 +123,20 @@ contract TradeRouterTest is Test {
     function test_buy_revertsOnZeroAmount() public {
         vm.prank(trader);
         vm.expectRevert(TradeRouter.ZeroAmount.selector);
-        router.buy(market, 0, 25, 0, 0, 0);
+        router.buy(market, 0, 25, 0, 0, 0, type(uint256).max);
     }
 
     function test_buy_respectsSlippage() public {
         vm.prank(trader);
         vm.expectRevert(LMSRMarket.InvalidParameters.selector);
-        router.buy(market, 0, 25, 10_000000, type(uint256).max, 0);
+        router.buy(market, 0, 25, 10_000000, type(uint256).max, 0, type(uint256).max);
     }
 
     function test_buy_rejectsInvalidMarket() public {
         LMSRMarket fakeMarket = LMSRMarket(address(0xDEAD));
         vm.prank(trader);
         vm.expectRevert(TradeRouter.InvalidMarket.selector);
-        router.buy(fakeMarket, 0, 25, 10_000000, 0, 0);
+        router.buy(fakeMarket, 0, 25, 10_000000, 0, 0, type(uint256).max);
     }
 
     function test_buy_enforcesMaxBuyAmount() public {
@@ -145,13 +145,13 @@ contract TradeRouterTest is Test {
 
         // $5 buy works
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 5_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 5_000000, 0, 0, type(uint256).max);
         assertGt(shares, 0);
 
         // $6 buy reverts
         vm.prank(trader);
         vm.expectRevert(TradeRouter.BuyExceedsLimit.selector);
-        router.buy(market, 0, 25, 6_000000, 0, 0);
+        router.buy(market, 0, 25, 6_000000, 0, 0, type(uint256).max);
     }
 
     function test_buy_noLimitWhenZero() public {
@@ -159,7 +159,7 @@ contract TradeRouterTest is Test {
         assertEq(router.maxBuyAmount(), 0);
 
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 100_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 100_000000, 0, 0, type(uint256).max);
         assertGt(shares, 0);
     }
 
@@ -176,12 +176,12 @@ contract TradeRouterTest is Test {
     function test_sell_returnsUSDCToUser() public {
         // Buy via router
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0, type(uint256).max);
 
         // Sell via router
         uint256 balBefore = usdc.balanceOf(trader);
         vm.prank(trader);
-        uint256 payout = router.sell(market, 0, 25, shares, 0);
+        uint256 payout = router.sell(market, 0, 25, shares, 0, type(uint256).max);
 
         assertGt(payout, 0, "Should receive payout");
         assertEq(usdc.balanceOf(trader), balBefore + payout, "USDC to trader");
@@ -190,11 +190,11 @@ contract TradeRouterTest is Test {
 
     function test_sell_partialSell() public {
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0, type(uint256).max);
 
         // Sell half
         vm.prank(trader);
-        router.sell(market, 0, 25, shares / 2, 0);
+        router.sell(market, 0, 25, shares / 2, 0, type(uint256).max);
 
         // Trader still has remaining shares
         uint256 tokenId = _tokenId(0, 0);
@@ -204,10 +204,10 @@ contract TradeRouterTest is Test {
 
     function test_sell_routerHoldsNoNFTs() public {
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 50_000000, 0, 0, type(uint256).max);
 
         vm.prank(trader);
-        router.sell(market, 0, 25, shares, 0);
+        router.sell(market, 0, 25, shares, 0, type(uint256).max);
 
         uint256 tokenId = _tokenId(0, 0);
         assertEq(posNFT.balanceOf(address(router), tokenId), 0);
@@ -220,7 +220,7 @@ contract TradeRouterTest is Test {
     function test_claim_paysUserAfterResolution() public {
         // Buy bucket 2 (value 50-75)
         vm.prank(trader);
-        uint256 shares = router.buy(market, 50, 75, 50_000000, 0, 0);
+        uint256 shares = router.buy(market, 50, 75, 50_000000, 0, 0, type(uint256).max);
 
         // Resolve to bucket 2
         vm.prank(creator);
@@ -230,7 +230,7 @@ contract TradeRouterTest is Test {
         uint256 tokenId = _tokenId(2, 2);
         uint256 balBefore = usdc.balanceOf(trader);
         vm.prank(trader);
-        uint256 payout = router.claim(market, tokenId);
+        uint256 payout = router.claim(market, tokenId, type(uint256).max);
 
         assertEq(payout, shares, "Payout = shares ($1 each)");
         assertEq(usdc.balanceOf(trader), balBefore + payout, "USDC to trader");
@@ -248,11 +248,11 @@ contract TradeRouterTest is Test {
         uint256 balStart = usdc.balanceOf(trader);
 
         // Buy
-        uint256 shares = router.buy(market, 25, 50, 100_000000, 0, 0);
+        uint256 shares = router.buy(market, 25, 50, 100_000000, 0, 0, type(uint256).max);
         assertGt(shares, 0);
 
         // Sell all back
-        uint256 payout = router.sell(market, 25, 50, shares, 0);
+        uint256 payout = router.sell(market, 25, 50, shares, 0, type(uint256).max);
         assertGt(payout, 0);
 
         vm.stopPrank();
@@ -265,7 +265,7 @@ contract TradeRouterTest is Test {
 
     function test_fullLifecycle_buyClaimViaRouter() public {
         vm.prank(trader);
-        uint256 shares = router.buy(market, 0, 25, 100_000000, 0, 0);
+        uint256 shares = router.buy(market, 0, 25, 100_000000, 0, 0, type(uint256).max);
 
         vm.prank(creator);
         market.resolveMarket(0);
@@ -273,7 +273,7 @@ contract TradeRouterTest is Test {
         uint256 tokenId = _tokenId(0, 0);
         uint256 balBefore = usdc.balanceOf(trader);
         vm.prank(trader);
-        router.claim(market, tokenId);
+        router.claim(market, tokenId, type(uint256).max);
 
         assertEq(usdc.balanceOf(trader), balBefore + shares);
     }

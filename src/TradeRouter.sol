@@ -59,9 +59,15 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
     error ZeroAmount();
     error BuyExceedsLimit();
     error InvalidMarket();
+    error Expired();
 
     modifier onlyValidMarket(LMSRMarket market) {
         if (!factory.isValidMarket(address(market))) revert InvalidMarket();
+        _;
+    }
+
+    modifier ensure(uint256 deadline) {
+        if (block.timestamp > deadline) revert Expired();
         _;
     }
 
@@ -85,14 +91,16 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Buy shares — USDC pulled from user, NFT minted to user
+    /// @param deadline Unix timestamp after which the trade is invalid (slippage + staleness protection)
     function buy(
         LMSRMarket market,
         uint256 rangeLower,
         uint256 rangeUpper,
         uint256 amountUSDC,
         uint256 minSharesOut,
-        uint256 targetShares
-    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 shares) {
+        uint256 targetShares,
+        uint256 deadline
+    ) external nonReentrant whenNotPaused ensure(deadline) onlyValidMarket(market) returns (uint256 shares) {
         if (amountUSDC == 0) revert ZeroAmount();
         if (maxBuyAmount > 0 && amountUSDC > maxBuyAmount) revert BuyExceedsLimit();
         IERC20(address(usdc)).safeTransferFrom(msg.sender, address(this), amountUSDC);
@@ -115,7 +123,7 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 shares) {
+    ) external nonReentrant whenNotPaused ensure(deadline) onlyValidMarket(market) returns (uint256 shares) {
         if (amountUSDC == 0) revert ZeroAmount();
         if (maxBuyAmount > 0 && amountUSDC > maxBuyAmount) revert BuyExceedsLimit();
         usdc.permit(msg.sender, address(this), amountUSDC, deadline, v, r, s);
@@ -138,8 +146,9 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
         uint256 rangeLower,
         uint256 rangeUpper,
         uint256 sharesToSell,
-        uint256 minUsdcOut
-    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
+        uint256 minUsdcOut,
+        uint256 deadline
+    ) external nonReentrant whenNotPaused ensure(deadline) onlyValidMarket(market) returns (uint256 payoutUSDC) {
         if (sharesToSell == 0) revert ZeroAmount();
 
         // Compute tokenId for this range (absolute bucket indexing)
@@ -167,8 +176,9 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
     /// @dev Claims full NFT balance (no partial claims)
     function claim(
         LMSRMarket market,
-        uint256 tokenId
-    ) external nonReentrant whenNotPaused onlyValidMarket(market) returns (uint256 payoutUSDC) {
+        uint256 tokenId,
+        uint256 deadline
+    ) external nonReentrant whenNotPaused ensure(deadline) onlyValidMarket(market) returns (uint256 payoutUSDC) {
         // Pull all NFTs from user
         uint256 balance = positionNFT.balanceOf(msg.sender, tokenId);
         if (balance == 0) revert ZeroAmount();
