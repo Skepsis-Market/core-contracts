@@ -19,11 +19,13 @@ optimizer_runs = 1
 via_ir = true
 
 [rpc_endpoints]
-fuji  = "${FUJI_RPC_URL}"
-local = "http://127.0.0.1:8545"
+fuji        = "${FUJI_RPC_URL}"
+arb_sepolia = "${ARB_SEPOLIA_RPC_URL}"
+local       = "http://127.0.0.1:8545"
 
 [etherscan]
-fuji = { key = "${SNOWSCAN_API_KEY}", url = "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan" }
+fuji        = { key = "${SNOWSCAN_API_KEY}", url = "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan" }
+arb_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api", chain = 421614 }
 
 [profile.halmos]
 src = "src"

@@ -6,6 +6,7 @@ import {PositionNFT} from "../src/PositionNFT.sol";
 import {MarketFactory} from "../src/MarketFactory.sol";
 import {Vault} from "../src/Vault.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
+import {TradeRouter} from "../src/TradeRouter.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 
 /// @notice Full deployment + setup script for Avalanche Fuji testnet.
@@ -60,6 +61,7 @@ contract DeployScript is Script {
     PositionNFT public positionNFT;
     MarketFactory public factory;
     Vault public vault;
+    TradeRouter public router;
 
     function setUp() public {
         deployer = vm.envAddress("DEPLOYER_ADDRESS");
@@ -159,6 +161,15 @@ contract DeployScript is Script {
         console.log("  vault->factory wired");
         console.log("  factory->vault wired");
 
+        // ── 5b. TradeRouter + wiring ──────────────────────────────────────────
+        // Stateless router — single entry point for all trades. Markets enforce
+        // onlyRouter so users cannot bypass slippage/deadline checks.
+        console.log("\n[5b] Deploying TradeRouter...");
+        router = new TradeRouter(address(usdc), address(positionNFT), address(factory));
+        factory.setRouter(address(router));
+        console.log("  TradeRouter:  ", address(router));
+        console.log("  factory->router wired (auto-applied to new markets)");
+
         // ── 5. Seed Vault + Create Market ─────────────────────────────────────
         // Deployer becomes the first LP.  Any subsequent createMarket() call will
         // pull from this pool (up to 20% of NAV per market, min 20% buffer kept).
@@ -225,6 +236,7 @@ contract DeployScript is Script {
         console.log("PositionNFT:  ", address(positionNFT));
         console.log("MarketFactory:", address(factory));
         console.log("Vault:        ", address(vault));
+        console.log("TradeRouter:  ", address(router));
         console.log("SampleMarket: ", marketAddr);
 
         console.log("\n--- deployments/fuji.json ---");
@@ -242,6 +254,7 @@ contract DeployScript is Script {
         console.log(string.concat("POSITION_NFT_ADDRESS=",  vm.toString(address(positionNFT))));
         console.log(string.concat("FACTORY_ADDRESS=",       vm.toString(address(factory))));
         console.log(string.concat("VAULT_ADDRESS=",         vm.toString(address(vault))));
+        console.log(string.concat("TRADE_ROUTER_ADDRESS=",  vm.toString(address(router))));
         console.log(string.concat("SAMPLE_MARKET_ADDRESS=", vm.toString(marketAddr)));
     }
 }
