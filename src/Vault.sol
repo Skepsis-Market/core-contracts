@@ -43,9 +43,11 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ─── Constants ────────────────────────────────────────────────────────────
-    uint256 public constant LIQUID_BUFFER_BPS  = 2000; // 20 % always liquid
-    uint256 public constant MAX_MARKET_BPS     = 2000; // no new deployment > 20 % of NAV
     uint256 public constant BPS_DENOMINATOR    = 10000;
+
+    // ─── Configurable Caps ──────────────────────────────────────────────────
+    /// @notice Max single market deployment as BPS of NAV (0 = no limit)
+    uint256 public maxMarketBps;
 
     uint256 public constant MIN_WITHDRAWAL_REQUEST = 1_000000; // 1 USDC minimum queue request
 
@@ -95,6 +97,7 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     event WithdrawalFulfilled(uint256 indexed queueIndex, uint256 assetsOwed);
     event WithdrawalClaimed(address indexed owner, uint256 indexed queueIndex, uint256 assets);
     event DepositsEnabledUpdated(bool enabled);
+    event MaxMarketBpsUpdated(uint256 maxMarketBps);
     event FactoryUpdated(address indexed oldFactory, address indexed newFactory);
 
     // ─── Errors ───────────────────────────────────────────────────────────────
@@ -146,21 +149,9 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     }
 
     /// @notice Liquid USDC available for INSTANT withdrawal (excludes reserved for queue).
-    ///         Buffer only applies to DEPLOYED capital, not idle USDC.
-    ///         If nothing deployed, 100% of liquid is available.
     function liquidAvailable() public view returns (uint256) {
         uint256 liquid = IERC20(asset()).balanceOf(address(this));
-        uint256 deployed = _totalMarketValue();
-        
-        // Reserved for queued withdrawals is not available
         uint256 unavailable = reservedForWithdrawals;
-        
-        // Buffer only applies when capital is deployed
-        if (deployed > 0) {
-            uint256 buffer = (deployed * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
-            unavailable += buffer;
-        }
-        
         return liquid > unavailable ? liquid - unavailable : 0;
     }
 
@@ -201,7 +192,7 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
         super._deposit(caller, receiver, assets, shares);
     }
 
-    /// @notice Withdrawals only from liquid USDC above the 20% buffer. Blocked when paused.
+    /// @notice Instant withdrawal from liquid USDC (excludes reserved for queue). Blocked when paused.
     function _withdraw(
         address caller,
         address receiver,
@@ -224,6 +215,12 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     function setDepositsEnabled(bool _enabled) external onlyOwner {
         depositsEnabled = _enabled;
         emit DepositsEnabledUpdated(_enabled);
+    }
+
+    /// @notice Set max single-market deployment as BPS of NAV (0 = no limit)
+    function setMaxMarketBps(uint256 _maxMarketBps) external onlyOwner {
+        maxMarketBps = _maxMarketBps;
+        emit MaxMarketBpsUpdated(_maxMarketBps);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -316,19 +313,11 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
         return pendingCount;
     }
 
-    /// @notice USDC available for new market deployments (excludes reserved + buffer)
+    /// @notice USDC available for new market deployments (excludes reserved + owed)
     function deployableCapital() public view returns (uint256) {
         uint256 liquid = IERC20(asset()).balanceOf(address(this));
-        uint256 deployed = _totalMarketValue();
-        
-        // Cannot deploy reserved capital
-        uint256 unavailable = reservedForWithdrawals;
-        
-        // Buffer on deployed capital
-        if (deployed > 0) {
-            unavailable += (deployed * LIQUID_BUFFER_BPS) / BPS_DENOMINATOR;
-        }
-        
+        // Cannot deploy capital owed to queued withdrawals
+        uint256 unavailable = reservedForWithdrawals + totalAssetsOwed;
         return liquid > unavailable ? liquid - unavailable : 0;
     }
 
@@ -350,9 +339,9 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
         // Guard 1: must not exceed deployable capital (respects reserved + buffer)
         if (amount > deployableCapital()) revert InsufficientLiquidBuffer();
 
-        // Guard 2: per-market cap (skip when vault is empty)
-        if (ta > 0) {
-            if ((amount * BPS_DENOMINATOR) / ta > MAX_MARKET_BPS) {
+        // Guard 2: per-market cap (skip when vault is empty or no cap set)
+        if (ta > 0 && maxMarketBps > 0) {
+            if ((amount * BPS_DENOMINATOR) / ta > maxMarketBps) {
                 revert ExceedsMarketCap();
             }
         }
@@ -387,14 +376,14 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
     function deployTo(address market, uint256 amount) external onlyOwner {
         if (!isRegistered[market]) revert MarketNotRegistered();
 
-        // Guard 1: must not exceed deployable capital (respects reserved + buffer)
+        // Guard 1: must not exceed deployable capital (respects reserved + owed)
         if (amount > deployableCapital()) revert InsufficientLiquidBuffer();
 
-        // Guard 2: per-market cap (skip on first ever deployment when ta == 0)
+        // Guard 2: per-market cap (skip when no cap set or vault empty)
         uint256 ta = totalAssets();
-        if (ta > 0) {
+        if (ta > 0 && maxMarketBps > 0) {
             uint256 newMarketDeployed = deployedTo[market] + amount;
-            if ((newMarketDeployed * BPS_DENOMINATOR) / ta > MAX_MARKET_BPS) {
+            if ((newMarketDeployed * BPS_DENOMINATOR) / ta > maxMarketBps) {
                 revert ExceedsMarketCap();
             }
         }

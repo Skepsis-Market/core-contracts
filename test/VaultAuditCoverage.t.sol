@@ -223,7 +223,7 @@ contract VaultAuditCoverageTest is Test {
     ///         Queue burns shares but NAV doesn't adjust — deployable stays inflated.
     ///         This test documents the current (incorrect) behavior. Vault V2 will fix this
     ///         by subtracting totalAssetsOwed from both totalAssets() and deployableCapital().
-    function test_withdrawalQueue_deployableDoesNotAccountForOwed_KNOWN_ISSUE() public {
+    function test_withdrawalQueue_deployableAccountsForOwed() public {
         _lpDeposit(lp1, 10_000_000000);
 
         uint256 deployableBefore = vault.deployableCapital();
@@ -233,9 +233,8 @@ contract VaultAuditCoverageTest is Test {
         vault.requestWithdrawal(lp1Bal / 2);
 
         uint256 deployableAfter = vault.deployableCapital();
-        // BUG: deployable is unchanged because totalAssetsOwed is not subtracted
-        // This will be fixed in Vault V2
-        assertEq(deployableAfter, deployableBefore, "KNOWN ISSUE: deployable unchanged after queue request");
+        // FIXED: deployable now subtracts totalAssetsOwed — queued capital is not deployable
+        assertLt(deployableAfter, deployableBefore, "Deployable should decrease after queue request");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

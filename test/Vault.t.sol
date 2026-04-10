@@ -204,14 +204,27 @@ contract VaultTest is Test {
     }
 
     function test_deployTo_revertsIfExceedsMarketCap() public {
-        // Deposit enough that $9k would exceed 20% cap
         _lpDeposit(lp1, 50_000_000000);
+
+        // Set 20% per-market cap
+        vm.prank(admin);
+        vault.setMaxMarketBps(2000);
 
         // 20% of ~$52k = $10.4k per market cap
         // Deploying $11k to market1 should revert
         vm.prank(admin);
         vm.expectRevert(Vault.ExceedsMarketCap.selector);
         vault.deployTo(address(market1), 11_000_000000);
+    }
+
+    function test_deployTo_noCapWhenMaxMarketBpsZero() public {
+        _lpDeposit(lp1, 50_000_000000);
+
+        // maxMarketBps = 0 (default) means no limit
+        // Deploying $50k to one market should succeed
+        vm.prank(admin);
+        vault.deployTo(address(market1), 50_000_000000);
+        assertEq(vault.deployedTo(address(market1)), 50_000_000000);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
