@@ -19,7 +19,7 @@ import { readFileSync } from "fs";
 const PRIVATE_KEY = process.env.PRIVATE_KEY as `0x${string}`;
 if (!PRIVATE_KEY) throw new Error("Set PRIVATE_KEY env var");
 
-const FACTORY = "0x694D0E933a98F74FB97736B6a09441698532895d" as const;
+const FACTORY = "0x91178A3B4654847b957876feC50214ed9618C757" as const;
 const RPC = "https://sepolia-rollup.arbitrum.io/rpc";
 
 // ─── Market parameters ───────────────────────────────────────────────────────

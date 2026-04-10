@@ -148,10 +148,10 @@ contract Vault is ERC4626, Ownable, Pausable, ReentrancyGuard {
         return cachedTotalMarketValue;
     }
 
-    /// @notice Liquid USDC available for INSTANT withdrawal (excludes reserved for queue).
+    /// @notice Liquid USDC available for INSTANT withdrawal (excludes reserved + owed to queue).
     function liquidAvailable() public view returns (uint256) {
         uint256 liquid = IERC20(asset()).balanceOf(address(this));
-        uint256 unavailable = reservedForWithdrawals;
+        uint256 unavailable = reservedForWithdrawals + totalAssetsOwed;
         return liquid > unavailable ? liquid - unavailable : 0;
     }
 

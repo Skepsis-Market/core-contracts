@@ -37,21 +37,20 @@ contract DeployScript is Script {
     uint256 constant DEFAULT_FEE_BPS  = 200;         // 2% total fee per trade
     uint256 constant PROTOCOL_FEE_BPS = 2000;        // 20% of fees → protocol (= 0.4% of volume)
     uint256 constant MIN_POOL_BALANCE = 100_000000;  // $100 min seed per market
-    uint256 constant MAX_BUCKETS      = 100;
+    uint256 constant MAX_BUCKETS      = 1000;
 
     // ─── Vault initial LP seed ────────────────────────────────────────────────
-    uint256 constant VAULT_SEED_USDC  = 500_000_000000; // $500k
+    uint256 constant VAULT_SEED_USDC  = 1_000_000000; // $1,000
 
-    // ─── Sample market: AVAX/USD on Apr 1 2026 ───────────────────────────────
-    // 19 buckets of $10 wide covering $10–$200
-    uint256 constant MARKET_MIN       = 10;
-    uint256 constant MARKET_MAX       = 200;
-    uint256 constant MARKET_BUCKETS   = 19;
-    uint256 constant MARKET_POOL      = 10_000_000000;  // $10k from vault
-    // Alpha decay: linearly decay to 30% of initial alpha over 30 days
-    // Protects against late snipers as resolution approaches
-    uint256 constant DECAY_FINAL_BPS  = 3000;           // 30% of alphaInitial
-    uint256 constant DECAY_DURATION   = 30 days;
+    // ─── Sample BTC market ───────────────────────────────────────────────────
+    uint256 constant MARKET_POOL      = 200_000000;    // $200 from vault
+    uint256 constant BUCKET_WIDTH     = 100;           // $100 per bucket
+    uint256 constant MAX_BUCKET_ID    = 799;           // supports $0-$80K
+    // Seed 21 buckets at $71K-$73K, gaussian centered at $72K
+    uint256 constant SEED_START       = 710;
+    uint256 constant SEED_END         = 730;
+    uint256 constant SEED_CENTER      = 720;
+    uint256 constant MAX_RANGE_WIDTH  = 10;
 
 
     // ─── Runtime ─────────────────────────────────────────────────────────────
@@ -88,7 +87,7 @@ contract DeployScript is Script {
             console.log("\n[1/6] Deploying fresh MockUSDC (local chain)...");
             usdc = new MockUSDC();
         }
-        usdc.mint(deployer, VAULT_SEED_USDC + 100_000_000000); // vault seed + $100k trading buffer
+        usdc.mint(deployer, VAULT_SEED_USDC + 10_000_000000); // vault seed + $10k trading buffer
         console.log("  MockUSDC:    ", address(usdc));
         console.log("  Deployer balance:", usdc.balanceOf(deployer) / 1e6, "USDC");
 
@@ -145,9 +144,10 @@ contract DeployScript is Script {
             address(0xFEE)
         );
         require(address(factory) == predictedFactory, "Factory address prediction mismatch");
-        factory.setCreatorAllowance(deployer, 10);
+        factory.setCreatorAllowance(deployer, 100);
+        factory.setCreatorAllowance(0x0DFaa72FB12FaE26E7145A6B7A44DFA41d6DC4BB, 100);
         console.log("  MarketFactory:", address(factory));
-        console.log("  Creator allowance: 10 markets for deployer");
+        console.log("  Creator allowance: 100 markets for deployer + dev");
 
         // ── 4. Vault + wiring ─────────────────────────────────────────────────
         // Vault is ERC-4626.  Two-way wiring is needed:
@@ -181,37 +181,57 @@ contract DeployScript is Script {
         console.log("  Vault NAV:    ", vault.totalAssets() / 1e6, "USDC");
         console.log("  Deployable:   ", vault.deployableCapital() / 1e6, "USDC");
 
+        // Mint USDC to dev for testing
+        usdc.mint(0x0DFaa72FB12FaE26E7145A6B7A44DFA41d6DC4BB, 5_000_000000);
+        console.log("  Dev USDC:      5,000 USDC minted");
+
         // factory.createMarket() internally calls vault.fundNewMarket(market, seedAmount)
         // which transfers USDC from vault to the new LMSRMarket and registers it.
-        // Alpha decay is configured atomically by the factory using p.alphaFinal and
-        // p.decayDuration if both are non-zero.
-        console.log("\n  Creating sample market: AVAX/USD (Apr 1 2026)...");
-        console.log("  Range: $10 - $200 | Buckets: 19");
+        console.log("\n  Creating BTC market...");
+        console.log("  Range: $65K-$80K | Bucket width: $100 | Seeded: $71K-$73K (gaussian)");
 
-        uint256 alphaInitial = MARKET_POOL / 3;
+        uint256 numSeeded = SEED_END - SEED_START + 1; // 21
+        uint256 alphaInitial = MARKET_POOL / 4; // ~$50 alpha
 
-        // Absolute bucket indexing: bucket = value / bucketWidth
-        uint256 bw = (MARKET_MAX - MARKET_MIN) / MARKET_BUCKETS; // = 10
-        uint256 startBucket = MARKET_MIN / bw; // = 1
-        uint256 maxBid = startBucket + MARKET_BUCKETS - 1; // = 19
-        uint256[] memory seedIds = new uint256[](MARKET_BUCKETS);
-        uint256[] memory seedShares = new uint256[](MARKET_BUCKETS);
-        uint256 perBucket = MARKET_POOL / MARKET_BUCKETS;
-        for (uint256 i = 0; i < MARKET_BUCKETS; i++) {
-            seedIds[i] = startBucket + i;
-            seedShares[i] = perBucket;
+        // Build gaussian seed distribution centered at $72K
+        uint256[] memory seedIds = new uint256[](numSeeded);
+        uint256[] memory seedShares = new uint256[](numSeeded);
+        {
+            // Compute raw gaussian weights (integer-scaled to avoid floating point)
+            uint256[] memory rawWeights = new uint256[](numSeeded);
+            uint256 totalWeight = 0;
+            for (uint256 i = 0; i < numSeeded; i++) {
+                uint256 bucketId = SEED_START + i;
+                uint256 dist = bucketId > SEED_CENTER ? bucketId - SEED_CENTER : SEED_CENTER - bucketId;
+                // Approximate gaussian: weight = 1000 - dist^2 * 10 (simple parabola)
+                uint256 w = dist * dist * 10;
+                rawWeights[i] = w < 1000 ? 1000 - w : 1;
+                totalWeight += rawWeights[i];
+                seedIds[i] = bucketId;
+            }
+            // Scale to MARKET_POOL
+            uint256 assigned = 0;
+            for (uint256 i = 0; i < numSeeded - 1; i++) {
+                seedShares[i] = (rawWeights[i] * MARKET_POOL) / totalWeight;
+                if (seedShares[i] == 0) seedShares[i] = 1;
+                assigned += seedShares[i];
+            }
+            seedShares[numSeeded - 1] = MARKET_POOL - assigned;
         }
-        seedShares[MARKET_BUCKETS - 1] += MARKET_POOL - (perBucket * MARKET_BUCKETS);
 
         MarketFactory.MarketParams memory p;
         p.alpha          = alphaInitial;
         p.seedAmount     = MARKET_POOL;
-        p.bucketWidth    = bw;
-        p.maxBucketId    = maxBid;
+        p.bucketWidth    = BUCKET_WIDTH;
+        p.maxBucketId    = MAX_BUCKET_ID;
         p.seededBucketIds = seedIds;
         p.seededShares   = seedShares;
-        p.alphaFinal     = (alphaInitial * DECAY_FINAL_BPS) / 10000;
-        p.decayDuration  = DECAY_DURATION;
+        p.name           = "BTC Price Tonight";
+        p.description    = "Where will BTC/USD close tonight at 23:59 UTC?";
+        p.resolutionCriteria = "CoinGecko BTC/USD spot price at 23:59:00 UTC";
+        p.valueUnit      = "USD";
+        p.resolver       = deployer;
+        p.maxBucketsPerRange = MAX_RANGE_WIDTH;
 
         address marketAddr = factory.createMarket(p);
         LMSRMarket market  = LMSRMarket(marketAddr);
@@ -220,8 +240,9 @@ contract DeployScript is Script {
         console.log("  Market ID:    ", market.marketId());
         console.log("  poolBalance:  ", market.poolBalance() / 1e6, "USDC");
         console.log("  alpha:        ", market.alpha());
-        console.log("  alphaFinal:   ", market.alphaFinal());
-        console.log("  decayDays:    ", market.decayDuration() / 1 days);
+        console.log("  bucketWidth:  ", market.bucketWidth());
+        console.log("  maxBucketId:  ", market.maxBucketId());
+        console.log("  activeBuckets:", market.activeBucketCount());
         console.log("  lpVault:      ", market.lpVault());
         console.log("  Vault deployable remaining:", vault.deployableCapital() / 1e6, "USDC");
 
