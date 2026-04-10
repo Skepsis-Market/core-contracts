@@ -97,6 +97,7 @@ library BucketTree {
         uint32 maxSeededId = 0;
         for (uint256 i = 0; i < seedIds.length; i++) {
             uint32 sid = uint32(seedIds[i]);
+            if (sid > _maxLeafId) revert IndexOutOfBounds(sid, _maxLeafId + 1);
             if (sid < minSeededId) minSeededId = sid;
             if (sid > maxSeededId) maxSeededId = sid;
         }
@@ -189,6 +190,7 @@ library BucketTree {
         uint32 hi
     ) internal view returns (uint256) {
         if (tree.leafCount == 0) revert TreeNotInitialized();
+        if (lo < tree.leafOffset || hi < tree.leafOffset) revert InvalidRange(lo, hi);
         uint32 relLo = lo - tree.leafOffset;
         uint32 relHi = hi - tree.leafOffset;
         if (relLo > relHi) revert InvalidRange(lo, hi);
@@ -255,6 +257,7 @@ library BucketTree {
     /// @param newValue New WAD-scaled value for the leaf
     function setLeaf(Tree storage tree, uint32 leafId, uint256 newValue) internal {
         if (tree.leafCount == 0) revert TreeNotInitialized();
+        if (leafId < tree.leafOffset) revert IndexOutOfBounds(leafId, tree.leafCount);
         uint32 rel = leafId - tree.leafOffset;
         if (rel >= tree.leafCount) revert IndexOutOfBounds(leafId, tree.leafCount);
 

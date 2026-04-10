@@ -595,13 +595,17 @@ contract LMSRMarket is ReentrancyGuard {
         alpha = newAlpha;
 
         // Rebuild tree with new alpha — O(n log n) but runs at most once per epoch (30 min)
-        uint256[] memory values = new uint256[](bucketCount);
-        for (uint256 i = 0; i < bucketCount; i++) {
-            if (!_isBucketActive(i)) {
-                values[i] = 0; // Inactive leaves stay at 0
+        // Use tree's actual offset and count (lazy tree may cover a subset of bucketCount)
+        uint32 offset = _tree.leafOffset;
+        uint32 count = _tree.leafCount;
+        uint256[] memory values = new uint256[](count);
+        for (uint32 i = 0; i < count; i++) {
+            uint256 absoluteBucketId = uint256(offset + i);
+            if (!_isBucketActive(absoluteBucketId)) {
+                values[i] = 0;
                 continue;
             }
-            uint256 q = buckets[i].shares + PHANTOM_SHARES;
+            uint256 q = buckets[absoluteBucketId].shares + PHANTOM_SHARES;
             values[i] = ((q * WAD) / newAlpha).exp();
         }
         _tree.seedWithValues(values);
