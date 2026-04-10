@@ -288,14 +288,11 @@ contract LMSRMarket is ReentrancyGuard {
         lastAlphaSyncTime = block.timestamp;
         totalDeposited = p.poolBalance;
 
-        // Initialize all-zero tree with full capacity
-        _tree.init(uint32(bucketCount), 0);
-
         // Seed buckets with initial shares
         uint256 seededCount = p.seededBucketIds.length;
         uint256 maxShares = 0;
         uint256 totalShares = 0;
-        uint256[] memory treeValues = new uint256[](bucketCount);
+        uint256[] memory seedValues = new uint256[](seededCount);
 
         for (uint256 i = 0; i < seededCount; i++) {
             uint256 bid = p.seededBucketIds[i];
@@ -311,14 +308,15 @@ contract LMSRMarket is ReentrancyGuard {
                 lowerBound: lower,
                 upperBound: upper
             });
-            treeValues[bid] = (((shares + PHANTOM_SHARES) * WAD) / alpha).exp();
+            seedValues[i] = (((shares + PHANTOM_SHARES) * WAD) / alpha).exp();
             totalShares += shares;
             if (shares > maxShares) maxShares = shares;
         }
 
         if (totalShares != p.poolBalance) revert InvalidParameters();
 
-        _tree.rebuildWithSize(uint32(bucketCount), treeValues);
+        // Lazy tree init: builds only over seeded bucket range, grows on demand
+        _tree.initFromSeeds(uint32(maxBucketId), p.seededBucketIds, seedValues);
         maxLiability = maxShares;
 
         activeBucketCount = seededCount;
@@ -1233,6 +1231,12 @@ contract LMSRMarket is ReentrancyGuard {
             lowerBound: lower,
             upperBound: upper
         });
+
+        // Grow tree if this bucket is outside current range
+        uint32 bid32 = uint32(bucketId);
+        if (bid32 < _tree.leafOffset || bid32 >= _tree.leafOffset + _tree.leafCount) {
+            _tree.growToInclude(bid32);
+        }
 
         // Set tree leaf to phantom weight: exp(PHANTOM_SHARES / alpha)
         uint256 phantomExp = ((PHANTOM_SHARES * WAD) / alpha).exp();

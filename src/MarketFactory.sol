@@ -61,8 +61,8 @@ contract MarketFactory is Ownable {
     mapping(uint256 => address) public marketById;
 
     /// @notice LMSRMarket implementation contract cloned for every new market (EIP-1167).
-    ///         Removes 43k of LMSRMarket initcode from MarketFactory's own bytecode.
-    address public immutable implementation;
+    ///         Mutable so the impl can be upgraded without redeploying the factory.
+    address public implementation;
 
     /// @notice Creator address → remaining market-creation slots (0 = not allowed)
     mapping(address => uint256) public creatorAllowance;
@@ -109,6 +109,7 @@ contract MarketFactory is Ownable {
     event MarketUnpaused(uint256 indexed marketId, address indexed marketAddress);
     event RouterUpdated(address indexed oldRouter, address indexed newRouter);
     event VaultUpdated(address indexed oldVault, address indexed newVault);
+    event ImplementationUpdated(address indexed oldImpl, address indexed newImpl);
 
     // ─────────────────── Errors ──────────────────────────────────────────────
 
@@ -183,6 +184,15 @@ contract MarketFactory is Ownable {
         address oldRouter = router;
         router = _router;
         emit RouterUpdated(oldRouter, _router);
+    }
+
+    /// @notice Upgrade the LMSRMarket implementation used for new market clones
+    /// @dev Only affects markets created AFTER this call. Existing markets are unchanged.
+    function setImplementation(address _implementation) external onlyOwner {
+        if (_implementation == address(0)) revert InvalidParameters();
+        address oldImpl = implementation;
+        implementation = _implementation;
+        emit ImplementationUpdated(oldImpl, _implementation);
     }
 
     /// @notice Update router on an existing market (for upgrades)

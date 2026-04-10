@@ -42,7 +42,9 @@ library BucketTree {
         mapping(uint32 => Node) nodes;
         uint32 rootId;            // Root node ID (always allocated after init)
         uint32 nextId;            // Allocation counter for sparse nodes
-        uint32 leafCount;         // Total leaves (= bucketCount)
+        uint32 leafCount;         // Current tree capacity (number of leaves)
+        uint32 leafOffset;        // First leaf index (tree covers [leafOffset, leafOffset+leafCount-1])
+        uint32 maxLeafId;         // Hard ceiling for leaf IDs (= maxBucketId)
         uint256 rootSum;          // Cached Σ all leaf values — always current after mutations
         uint256 defaultLeafValue; // Initial value per leaf for sparse defaults
     }
@@ -65,10 +67,95 @@ library BucketTree {
         if (_leafCount > type(uint32).max / 2) revert TreeSizeTooLarge();
 
         tree.leafCount = _leafCount;
+        tree.leafOffset = 0;
+        tree.maxLeafId = _leafCount - 1; // init: capacity = size (no growth)
         tree.defaultLeafValue = _defaultLeafValue;
         tree.nextId = 0;
         tree.rootId = _allocNode(tree, 0, _leafCount - 1);
         tree.rootSum = tree.nodes[tree.rootId].sum;
+    }
+
+    /// @notice Initialize tree from sparse seed data — O(k log k) where k = seeded buckets
+    /// @dev Builds a minimal tree covering only [0, maxSeededId]. The tree can later grow
+    ///      via growToInclude() up to maxLeafCount. Unseeded leaves have 0 weight.
+    /// @param tree Storage reference to tree
+    /// @param _maxLeafId Hard ceiling leaf ID for future tree growth (= maxBucketId)
+    /// @param seedIds Array of leaf indices to seed
+    /// @param seedValues Parallel array of WAD-scaled values for each seeded leaf
+    function initFromSeeds(
+        Tree storage tree,
+        uint32 _maxLeafId,
+        uint256[] memory seedIds,
+        uint256[] memory seedValues
+    ) internal {
+        if (tree.leafCount != 0) revert TreeAlreadyInitialized();
+        require(seedIds.length == seedValues.length, "BucketTree: length mismatch");
+        require(seedIds.length > 0, "BucketTree: no seeds");
+
+        // Find min/max seeded IDs to determine minimal tree range
+        uint32 minSeededId = type(uint32).max;
+        uint32 maxSeededId = 0;
+        for (uint256 i = 0; i < seedIds.length; i++) {
+            uint32 sid = uint32(seedIds[i]);
+            if (sid < minSeededId) minSeededId = sid;
+            if (sid > maxSeededId) maxSeededId = sid;
+        }
+
+        // Tree covers [minSeededId, maxSeededId] — minimal range
+        uint32 initialLeafCount = maxSeededId - minSeededId + 1;
+        tree.leafCount = initialLeafCount;
+        tree.leafOffset = minSeededId;
+        tree.maxLeafId = _maxLeafId;
+        tree.defaultLeafValue = 0;
+        tree.nextId = 0;
+
+        // Build values array for the offset range
+        uint256[] memory values = new uint256[](initialLeafCount);
+        for (uint256 i = 0; i < seedIds.length; i++) {
+            values[uint32(seedIds[i]) - minSeededId] = seedValues[i];
+        }
+
+        (uint32 rootId, uint256 total) = _buildFromArray(tree, 0, initialLeafCount - 1, values);
+        tree.rootId = rootId;
+        tree.rootSum = total;
+    }
+
+    /// @notice Grow tree to include a new leaf index — O(n) rebuild
+    /// @dev Called when _activateBucket needs a leaf beyond current leafCount.
+    ///      Rebuilds tree with new capacity. Existing leaf values are preserved.
+    /// @param tree Storage reference to tree
+    /// @param targetLeafId The leaf index that must be reachable after growth
+    function growToInclude(Tree storage tree, uint32 targetLeafId) internal {
+        if (tree.leafCount == 0) revert TreeNotInitialized();
+        if (targetLeafId > tree.maxLeafId) revert IndexOutOfBounds(targetLeafId, tree.maxLeafId + 1);
+
+        uint32 oldOffset = tree.leafOffset;
+        uint32 oldCount = tree.leafCount;
+        uint32 oldMax = oldOffset + oldCount - 1;
+
+        // Check if already in range
+        if (targetLeafId >= oldOffset && targetLeafId <= oldMax) return;
+
+        // Compute new range [newOffset, newMax]
+        uint32 newOffset = targetLeafId < oldOffset ? targetLeafId : oldOffset;
+        uint32 newMax = targetLeafId > oldMax ? targetLeafId : oldMax;
+        uint32 newCount = newMax - newOffset + 1;
+
+        // Read all existing leaf values into new positions
+        uint256[] memory values = new uint256[](newCount);
+        for (uint32 i = 0; i < oldCount; i++) {
+            uint32 newPos = (oldOffset - newOffset) + i;
+            values[newPos] = _rangeSumRecursive(tree, tree.rootId, 0, oldCount - 1, i, i, WAD);
+        }
+        // New leaves default to 0 (already zeroed in memory)
+
+        // Rebuild
+        tree.leafOffset = newOffset;
+        tree.leafCount = newCount;
+        tree.nextId = 0;
+        (uint32 rootId, uint256 total) = _buildFromArray(tree, 0, newCount - 1, values);
+        tree.rootId = rootId;
+        tree.rootSum = total;
     }
 
     /// @notice Apply multiplicative factor to leaves [lo, hi] inclusive
@@ -84,11 +171,14 @@ library BucketTree {
         uint256 factor
     ) internal {
         if (tree.leafCount == 0) revert TreeNotInitialized();
-        if (lo > hi) revert InvalidRange(lo, hi);
-        if (hi >= tree.leafCount) revert IndexOutOfBounds(hi, tree.leafCount);
+        if (lo < tree.leafOffset || hi < tree.leafOffset) revert InvalidRange(lo, hi);
+        uint32 relLo = lo - tree.leafOffset;
+        uint32 relHi = hi - tree.leafOffset;
+        if (relLo > relHi) revert InvalidRange(lo, hi);
+        if (relHi >= tree.leafCount) revert IndexOutOfBounds(hi, tree.leafCount);
         if (factor < MIN_FACTOR || factor > MAX_FACTOR) revert InvalidFactor(factor);
 
-        _applyFactorRecursive(tree, tree.rootId, 0, tree.leafCount - 1, lo, hi, factor);
+        _applyFactorRecursive(tree, tree.rootId, 0, tree.leafCount - 1, relLo, relHi, factor);
     }
 
     /// @notice Query sum of leaf values in range [lo, hi] inclusive
@@ -99,16 +189,20 @@ library BucketTree {
         uint32 hi
     ) internal view returns (uint256) {
         if (tree.leafCount == 0) revert TreeNotInitialized();
-        if (lo > hi) revert InvalidRange(lo, hi);
-        if (hi >= tree.leafCount) revert IndexOutOfBounds(hi, tree.leafCount);
+        uint32 relLo = lo - tree.leafOffset;
+        uint32 relHi = hi - tree.leafOffset;
+        if (relLo > relHi) revert InvalidRange(lo, hi);
+        if (relHi >= tree.leafCount) revert IndexOutOfBounds(hi, tree.leafCount);
 
-        return _rangeSumRecursive(tree, tree.rootId, 0, tree.leafCount - 1, lo, hi, WAD);
+        return _rangeSumRecursive(tree, tree.rootId, 0, tree.leafCount - 1, relLo, relHi, WAD);
     }
 
     /// @notice Get a single leaf's current value — O(log n)
     function leafValue(Tree storage tree, uint32 leafId) internal view returns (uint256) {
-        if (leafId >= tree.leafCount) revert IndexOutOfBounds(leafId, tree.leafCount);
-        return _rangeSumRecursive(tree, tree.rootId, 0, tree.leafCount - 1, leafId, leafId, WAD);
+        // Out-of-range leaves have 0 value (inactive)
+        if (leafId < tree.leafOffset || leafId >= tree.leafOffset + tree.leafCount) return 0;
+        uint32 rel = leafId - tree.leafOffset;
+        return _rangeSumRecursive(tree, tree.rootId, 0, tree.leafCount - 1, rel, rel, WAD);
     }
 
     /// @notice Total sum of all leaves — O(1) from cached rootSum
@@ -161,9 +255,10 @@ library BucketTree {
     /// @param newValue New WAD-scaled value for the leaf
     function setLeaf(Tree storage tree, uint32 leafId, uint256 newValue) internal {
         if (tree.leafCount == 0) revert TreeNotInitialized();
-        if (leafId >= tree.leafCount) revert IndexOutOfBounds(leafId, tree.leafCount);
+        uint32 rel = leafId - tree.leafOffset;
+        if (rel >= tree.leafCount) revert IndexOutOfBounds(leafId, tree.leafCount);
 
-        _setLeafRecursive(tree, tree.rootId, 0, tree.leafCount - 1, leafId, newValue);
+        _setLeafRecursive(tree, tree.rootId, 0, tree.leafCount - 1, rel, newValue);
     }
 
     // ═══════════════════════════════════════════════════════════════════

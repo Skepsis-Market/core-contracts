@@ -397,11 +397,11 @@ contract BucketTreeTest is Test {
         wrapper.rangeSum(0, 10);
     }
 
-    function test_revert_leafValueOutOfBounds() public {
+    function test_leafValueOutOfBounds_returnsZero() public {
         wrapper.init(10, WAD);
-
-        vm.expectRevert(abi.encodeWithSelector(BucketTree.IndexOutOfBounds.selector, 10, 10));
-        wrapper.leafValue(10);
+        // Out-of-range leaves return 0 (inactive) instead of reverting
+        assertEq(wrapper.leafValue(10), 0);
+        assertEq(wrapper.leafValue(100), 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════
