@@ -202,6 +202,7 @@ contract LMSRMarket is ReentrancyGuard {
     error AlreadyInitialized(); // Clone guard: initialize() already called
     error MarketPaused();       // Market is emergency paused
     error RangeTooWide();       // Range exceeds maxRangeWidth
+    error TooEarlyToResolve();  // scheduledResolutionTime not yet reached
 
     /// @notice Market metadata for initialization (packed to avoid stack too deep)
     struct MarketMetadata {
@@ -1133,6 +1134,12 @@ contract LMSRMarket is ReentrancyGuard {
     function resolveMarket(uint256 _resolutionValue) external {
         if (msg.sender != resolver) revert Unauthorized();
         if (status != MarketStatus.ACTIVE) revert MarketAlreadyResolved();
+
+        // Enforce scheduled resolution time when set. 0 = no bound (resolve anytime),
+        // used for markets with unknown resolution dates (e.g., geopolitical events).
+        if (scheduledResolutionTime != 0 && block.timestamp < scheduledResolutionTime) {
+            revert TooEarlyToResolve();
+        }
 
         // Absolute bucket indexing: bucketId = value / bucketWidth
         uint256 calculatedBucket = _resolutionValue / bucketWidth;

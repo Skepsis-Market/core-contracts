@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {Script, console} from "forge-std/Script.sol";
+import {MarketFactory} from "../src/MarketFactory.sol";
+import {LMSRMarket} from "../src/LMSRMarket.sol";
+import {Vault} from "../src/Vault.sol";
+
+/// @notice Create a BTC price market wired to ChainlinkPriceOracleResolver.
+///
+/// Differs from CreateMarket.s.sol in three ways:
+///   1. resolver            = CHAINLINK_ORACLE_RESOLVER_ADDRESS (not deployer)
+///   2. scheduledResolution = now + RESOLVE_OFFSET_MIN minutes    (required; oracle enforces it)
+///   3. bucket structure    = $1K-wide buckets over $0-$200,999   (comfortably covers BTC)
+///
+/// PREREQUISITES
+///   .env: FACTORY_ADDRESS, CHAINLINK_ORACLE_RESOLVER_ADDRESS, PRIVATE_KEY, DEPLOYER_ADDRESS
+///   Deployer must have factory.creatorAllowance(deployer) > 0
+///   Vault must have deployableCapital >= SEED_AMOUNT
+///
+/// RUN
+///   forge script script/CreateOracleMarket.s.sol:CreateOracleMarketScript \
+///     --rpc-url $ARB_SEPOLIA_RPC_URL --broadcast --chain-id 421614
+contract CreateOracleMarketScript is Script {
+
+    // ─── Market Configuration ─────────────────────────────────────────────────
+
+    string  constant NAME               = "BTC/USD Oracle Test";
+    string  constant DESCRIPTION        = "End-to-end test of ChainlinkPriceOracleResolver on Arbitrum Sepolia.";
+    string  constant RESOLUTION_CRITERIA =
+        "Chainlink BTC/USD feed (0x56a43EB56Da12C0dc1D972ACb089c06a5dEF8e69) at scheduledResolutionTime. "
+        "winningBucket = floor(answer / 1e8 / bucketWidth).";
+    string  constant VALUE_UNIT         = "USD";
+
+    uint256 constant BUCKET_WIDTH       = 1_000;    // $1K per bucket
+    uint256 constant MAX_BUCKET_ID      = 200;      // buckets 0-200 → $0-$200,999
+
+    // Seed a gaussian around $100K across buckets 95-105 ($95K-$105K).
+    uint256 constant SEED_LOW_BUCKET    = 95;
+    uint256 constant SEED_HIGH_BUCKET   = 105;
+    uint256 constant SEED_CENTER_BUCKET = 100;
+
+    uint256 constant SEED_AMOUNT        = 500_000000;   // $500 pulled from vault
+    uint256 constant ALPHA              = 100_000000;   // $100 alpha
+    uint256 constant MIN_BET_SIZE       = 1_000000;     // $1
+
+    /// @notice Minutes from now until the market becomes resolvable.
+    /// Keep small so you can exercise the full flow in one session.
+    uint256 constant RESOLVE_OFFSET_MIN = 10;
+
+    // ─────────────────────────────────────────────────────────────────────────
+
+    function run() public {
+        address deployer       = vm.envAddress("DEPLOYER_ADDRESS");
+        address factoryAddr    = vm.envAddress("FACTORY_ADDRESS");
+        address oracleResolver = vm.envAddress("CHAINLINK_ORACLE_RESOLVER_ADDRESS");
+        uint256 pk             = vm.envUint("PRIVATE_KEY");
+
+        MarketFactory factory = MarketFactory(factoryAddr);
+        Vault vault = factory.vault();
+
+        console.log("=================================================");
+        console.log("  Create BTC Oracle Market");
+        console.log("=================================================");
+        console.log("Factory:         ", factoryAddr);
+        console.log("Oracle resolver: ", oracleResolver);
+        console.log("Creator:         ", deployer);
+        console.log("Creator slots:   ", factory.creatorAllowance(deployer));
+        console.log("Vault deployable:", vault.deployableCapital() / 1e6, "USDC");
+        console.log("Seed requested:  ", SEED_AMOUNT / 1e6, "USDC");
+
+        require(oracleResolver != address(0), "CHAINLINK_ORACLE_RESOLVER_ADDRESS not set");
+        require(factory.creatorAllowance(deployer) > 0, "Deployer has no creator allowance");
+        require(vault.deployableCapital() >= SEED_AMOUNT, "Vault: insufficient deployable capital");
+
+        uint256 schedTime = block.timestamp + (RESOLVE_OFFSET_MIN * 60);
+
+        // Gaussian seed distribution across [SEED_LOW_BUCKET, SEED_HIGH_BUCKET].
+        uint256 numSeeded = SEED_HIGH_BUCKET - SEED_LOW_BUCKET + 1;
+        uint256[] memory seedIds    = new uint256[](numSeeded);
+        uint256[] memory seedShares = new uint256[](numSeeded);
+        {
+            uint256[] memory rawWeights = new uint256[](numSeeded);
+            uint256 totalWeight = 0;
+            for (uint256 i = 0; i < numSeeded; i++) {
+                uint256 bucketId = SEED_LOW_BUCKET + i;
+                uint256 dist = bucketId > SEED_CENTER_BUCKET
+                    ? bucketId - SEED_CENTER_BUCKET
+                    : SEED_CENTER_BUCKET - bucketId;
+                uint256 w = dist * dist * 10;
+                rawWeights[i] = w < 1000 ? 1000 - w : 1;
+                totalWeight += rawWeights[i];
+                seedIds[i] = bucketId;
+            }
+            uint256 assigned = 0;
+            for (uint256 i = 0; i < numSeeded - 1; i++) {
+                seedShares[i] = (rawWeights[i] * SEED_AMOUNT) / totalWeight;
+                if (seedShares[i] == 0) seedShares[i] = 1;
+                assigned += seedShares[i];
+            }
+            seedShares[numSeeded - 1] = SEED_AMOUNT - assigned;
+        }
+
+        MarketFactory.MarketParams memory p;
+        p.alpha                   = ALPHA;
+        p.seedAmount              = SEED_AMOUNT;
+        p.bucketWidth             = BUCKET_WIDTH;
+        p.maxBucketId             = MAX_BUCKET_ID;
+        p.seededBucketIds         = seedIds;
+        p.seededShares            = seedShares;
+        p.name                    = NAME;
+        p.description             = DESCRIPTION;
+        p.resolutionCriteria      = RESOLUTION_CRITERIA;
+        p.valueUnit               = VALUE_UNIT;
+        p.resolver                = oracleResolver;
+        p.biddingDeadline         = 0;
+        p.scheduledResolutionTime = schedTime;
+        p.minBetSize              = MIN_BET_SIZE;
+
+        vm.startBroadcast(pk);
+        address marketAddr = factory.createMarket(p);
+        vm.stopBroadcast();
+
+        LMSRMarket market = LMSRMarket(marketAddr);
+
+        console.log("\n  Market created!");
+        console.log("  Address:                 ", marketAddr);
+        console.log("  Market ID:               ", market.marketId());
+        console.log("  Pool balance:            ", market.poolBalance() / 1e6, "USDC");
+        console.log("  Resolver:                ", market.resolver());
+        console.log("  scheduledResolutionTime: ", market.scheduledResolutionTime());
+        console.log("  Resolvable in ~min:      ", RESOLVE_OFFSET_MIN);
+        console.log("  bucketWidth:             ", market.bucketWidth());
+        console.log("  maxBucketId:             ", market.maxBucketId());
+
+        require(market.resolver() == oracleResolver, "Resolver mismatch: resolve() will revert");
+
+        console.log("\n  Copy to both core-contracts/.env and skepsis-be/.env:");
+        console.log(string.concat("  MARKET_ADDRESS=", vm.toString(marketAddr)));
+
+        console.log("\n  Next: register this market with the oracle (see guide \xc2\xa72.3):");
+        console.log(
+            string.concat(
+                "  cast send $CHAINLINK_ORACLE_RESOLVER_ADDRESS ",
+                "'registerMarket(address,address,uint256,uint256)' ",
+                vm.toString(marketAddr),
+                " 0x56a43EB56Da12C0dc1D972ACb089c06a5dEF8e69 100000000 3600 ",
+                "--rpc-url $ARB_SEPOLIA_RPC_URL --private-key $PRIVATE_KEY"
+            )
+        );
+    }
+}
