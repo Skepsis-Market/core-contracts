@@ -17,6 +17,17 @@ interface AggregatorV3Interface {
             uint80 answeredInRound
         );
 
+    function getRoundData(uint80 _roundId)
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        );
+
     function decimals() external view returns (uint8);
 }
 
@@ -25,14 +36,21 @@ interface AggregatorV3Interface {
 ///
 /// ARCHITECTURE
 /// ═══════════════════════════════════════════════════════════════════
-///  Owner         → registerMarket(market, feed, divisor, staleness)  gates the config
-///  Anyone        → resolve(market)                                   permissionless trigger
-///  LMSRMarket    → resolveMarket(value)                              enforces scheduled time
-///  Chainlink     → latestRoundData()                                 source of truth for price
+///  Owner         → registerMarket(market, feed, divisor, staleness)   gates the config
+///  Anyone        → resolve(market, roundId)                           permissionless trigger
+///  LMSRMarket    → resolveMarket(value)                               enforces scheduled time
+///  Chainlink     → getRoundData(roundId) / latestRoundData()          source of truth for price
 ///
-/// Time enforcement lives in LMSRMarket.resolveMarket (single source of truth).
-/// priceDivisor scales the raw feed answer into the market's unit space, e.g.
-/// a BTC/USD feed (1e8 decimals) into a $1-bucket market: divisor = 1e8 → 94500.
+/// ROUND PINNING
+/// ═══════════════════════════════════════════════════════════════════
+/// Instead of reading `latestRoundData()` at resolve time (which drifts with
+/// block landing), callers supply the Chainlink `roundId` that was live at
+/// `scheduledResolutionTime`. The contract verifies the pinned round brackets
+/// scheduledTime — its own `updatedAt` is ≤ scheduledTime, and the next round's
+/// `updatedAt` is > scheduledTime. This guarantees the pinned answer is
+/// exactly the price Chainlink reported at scheduledResolutionTime, regardless
+/// of when resolve() actually lands on chain. Off-chain tooling (keeper,
+/// admin UI) discovers the right roundId by binary-searching feed history.
 contract ChainlinkPriceOracleResolver is Ownable {
     // ─── Config ──────────────────────────────────────────────────────────────
 
@@ -58,6 +76,7 @@ contract ChainlinkPriceOracleResolver is Ownable {
     event MarketResolvedByOracle(
         address indexed market,
         address indexed caller,
+        uint80 roundId,
         uint256 resolvedValue,
         uint256 winningBucket
     );
@@ -73,6 +92,10 @@ contract ChainlinkPriceOracleResolver is Ownable {
     error StalePriceFeed();
     error InvalidPrice();
     error PriceOutOfRange();
+    error InvalidRound();
+    error RoundTooNew();
+    error RoundTooOld();
+    error NoScheduledTime();
 
     // ─── Constructor ─────────────────────────────────────────────────────────
 
@@ -85,7 +108,9 @@ contract ChainlinkPriceOracleResolver is Ownable {
     /// @param market               LMSRMarket address
     /// @param priceFeed            Chainlink AggregatorV3 feed address
     /// @param priceDivisor         raw / priceDivisor = value in market's unit space
-    /// @param stalenessThreshold   max Chainlink update age in seconds (0 → default 3600)
+    /// @param stalenessThreshold   max gap between pinned round and next round, in seconds
+    ///                             (0 → default 3600). Also doubles as a liveness bound
+    ///                             on the feed around scheduledResolutionTime.
     function registerMarket(
         address market,
         address priceFeed,
@@ -118,32 +143,39 @@ contract ChainlinkPriceOracleResolver is Ownable {
 
     // ─── Core ────────────────────────────────────────────────────────────────
 
-    /// @notice Resolve a registered market using its Chainlink price feed.
-    ///         Permissionless — anyone may call once all conditions are met.
-    /// @dev    TooEarlyToResolve / InvalidResolutionValue propagate from LMSRMarket.
-    function resolve(address market) external {
+    /// @notice Resolve a registered market using the Chainlink round that was
+    ///         live at scheduledResolutionTime. Permissionless.
+    /// @param  market   LMSRMarket to resolve
+    /// @param  roundId  Chainlink round that brackets scheduledResolutionTime.
+    ///                  Off-chain tooling finds this by binary-searching history.
+    /// @dev    Reverts TooEarlyToResolve / InvalidResolutionValue propagate from LMSRMarket.
+    function resolve(address market, uint80 roundId) external {
         MarketConfig memory cfg = configs[market];
         if (!cfg.registered) revert NotRegistered();
 
-        // Cheap upfront check; market.resolveMarket also enforces this, but
-        // failing here gives callers a clearer error surface.
         LMSRMarket m = LMSRMarket(market);
         if (m.status() != LMSRMarket.MarketStatus.ACTIVE) revert MarketNotActive();
 
-        uint256 resolvedValue = _fetchPrice(cfg);
+        uint256 schedTime = m.scheduledResolutionTime();
+        if (schedTime == 0) revert NoScheduledTime();
+
+        uint256 resolvedValue = _pinnedPrice(cfg, schedTime, roundId);
 
         // Time and range enforcement live inside LMSRMarket.resolveMarket.
         m.resolveMarket(resolvedValue);
 
         uint256 winningBucket = resolvedValue / m.bucketWidth();
-        emit MarketResolvedByOracle(market, msg.sender, resolvedValue, winningBucket);
+        emit MarketResolvedByOracle(market, msg.sender, roundId, resolvedValue, winningBucket);
     }
 
     // ─── Views (for keeper bots / frontends) ─────────────────────────────────
 
-    /// @notice Check whether a market can be resolved right now.
-    /// @return canResolve  true if resolve(market) will succeed
-    /// @return reason      short human-readable explanation when canResolve is false
+    /// @notice Lightweight check — is the market *resolvable-in-principle* right now?
+    /// @dev    Does NOT verify a roundId. Off-chain callers use this to decide
+    ///         whether to run the roundId binary search, then call resolve().
+    /// @return canResolve  true iff registered, active, past scheduledTime, and
+    ///                     the feed has already emitted a round after scheduledTime.
+    /// @return reason      short human-readable explanation when canResolve is false.
     function checkResolvable(address market)
         external
         view
@@ -156,32 +188,30 @@ contract ChainlinkPriceOracleResolver is Ownable {
         if (m.status() != LMSRMarket.MarketStatus.ACTIVE) return (false, "market not active");
 
         uint256 schedTime = m.scheduledResolutionTime();
-        if (schedTime != 0 && block.timestamp < schedTime) return (false, "too early");
+        if (schedTime == 0) return (false, "no scheduled time");
+        if (block.timestamp < schedTime) return (false, "too early");
 
-        (, int256 answer, , uint256 updatedAt, ) =
+        (, , , uint256 latestUpdatedAt, ) =
             AggregatorV3Interface(cfg.priceFeed).latestRoundData();
-
-        if (block.timestamp > updatedAt + cfg.stalenessThreshold) return (false, "price stale");
-        if (answer <= 0) return (false, "invalid price");
-
-        uint256 resolvedValue = uint256(answer) / cfg.priceDivisor;
-        if (resolvedValue / m.bucketWidth() > m.maxBucketId()) return (false, "price out of range");
+        // Need at least one round strictly after scheduledTime to prove a bracket.
+        if (latestUpdatedAt <= schedTime) return (false, "waiting for post-scheduled round");
 
         return (true, "ready");
     }
 
-    /// @notice Preview what value `resolve()` would set if called right now.
-    /// @dev    Mirrors every guard `resolve` applies except the time and staleness
-    ///         checks — so a stale feed still returns a value, but an out-of-range
-    ///         price reverts exactly as the on-chain resolution path would.
-    function previewResolutionValue(address market) external view returns (uint256) {
+    /// @notice Preview the exact value `resolve(market, roundId)` would set,
+    ///         with full round-pinning verification. Useful for keepers to
+    ///         sanity-check before submitting a tx.
+    /// @param  market   LMSRMarket to preview
+    /// @param  roundId  Candidate Chainlink round
+    function previewResolutionValue(address market, uint80 roundId) external view returns (uint256) {
         MarketConfig memory cfg = configs[market];
         if (!cfg.registered) revert NotRegistered();
 
-        (, int256 answer, , , ) = AggregatorV3Interface(cfg.priceFeed).latestRoundData();
-        if (answer <= 0) revert InvalidPrice();
+        uint256 schedTime = LMSRMarket(market).scheduledResolutionTime();
+        if (schedTime == 0) revert NoScheduledTime();
 
-        uint256 resolvedValue = uint256(answer) / cfg.priceDivisor;
+        uint256 resolvedValue = _pinnedPrice(cfg, schedTime, roundId);
 
         LMSRMarket m = LMSRMarket(market);
         if (resolvedValue / m.bucketWidth() > m.maxBucketId()) revert PriceOutOfRange();
@@ -191,14 +221,31 @@ contract ChainlinkPriceOracleResolver is Ownable {
 
     // ─── Internal ────────────────────────────────────────────────────────────
 
-    /// @dev Fetch Chainlink price with staleness + sign checks, scale to market units.
-    function _fetchPrice(MarketConfig memory cfg) internal view returns (uint256) {
-        (, int256 answer, , uint256 updatedAt, ) =
-            AggregatorV3Interface(cfg.priceFeed).latestRoundData();
+    /// @dev Verify `roundId` brackets `schedTime` and return its price in market units.
+    ///
+    /// Bracket proof:
+    ///   1. round(roundId).updatedAt ≤ schedTime       — round existed at schedTime
+    ///   2. round(roundId+1).updatedAt > schedTime     — next round came after schedTime
+    ///   3. round(roundId+1).updatedAt - round.updatedAt ≤ stalenessThreshold
+    ///                                                 — feed was healthy around schedTime
+    ///
+    /// Together (1) and (2) prove `roundId` is exactly the round Chainlink reported
+    /// at schedTime — the caller cannot cherry-pick an older or newer round.
+    function _pinnedPrice(
+        MarketConfig memory cfg,
+        uint256 schedTime,
+        uint80 roundId
+    ) internal view returns (uint256) {
+        AggregatorV3Interface feed = AggregatorV3Interface(cfg.priceFeed);
 
-        // Stale answers are as dangerous as missing answers — refuse to resolve.
-        if (block.timestamp > updatedAt + cfg.stalenessThreshold) revert StalePriceFeed();
-        // Chainlink returns int256; negative / zero indicates a degraded feed.
+        (, int256 answer, , uint256 updatedAt, ) = feed.getRoundData(roundId);
+        if (updatedAt == 0) revert InvalidRound();
+        if (updatedAt > schedTime) revert RoundTooNew();
+
+        (, , , uint256 nextUpdatedAt, ) = feed.getRoundData(roundId + 1);
+        if (nextUpdatedAt == 0 || nextUpdatedAt <= schedTime) revert RoundTooOld();
+        if (nextUpdatedAt - updatedAt > cfg.stalenessThreshold) revert StalePriceFeed();
+
         if (answer <= 0) revert InvalidPrice();
 
         return uint256(answer) / cfg.priceDivisor;

@@ -40,8 +40,8 @@ contract CreateOracleMarketScript is Script {
     uint256 constant SEED_HIGH_BUCKET   = 105;
     uint256 constant SEED_CENTER_BUCKET = 100;
 
-    uint256 constant SEED_AMOUNT        = 500_000000;   // $500 pulled from vault
-    uint256 constant ALPHA              = 100_000000;   // $100 alpha
+    uint256 constant SEED_AMOUNT        = 200_000000;   // $200 pulled from vault (min $100 factory floor)
+    uint256 constant ALPHA              = 50_000000;    // $50 alpha (~SEED/4)
     uint256 constant MIN_BET_SIZE       = 1_000000;     // $1
 
     /// @notice Minutes from now until the market becomes resolvable.
