@@ -5,6 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {MarketFactory} from "../src/MarketFactory.sol";
 import {LMSRMarket} from "../src/LMSRMarket.sol";
 import {Vault} from "../src/Vault.sol";
+import {ChainlinkPriceOracleResolver} from "../src/ChainlinkPriceOracleResolver.sol";
 
 /// @notice Create a BTC price market wired to ChainlinkPriceOracleResolver.
 ///
@@ -25,7 +26,7 @@ contract CreateOracleMarketScript is Script {
 
     // ─── Market Configuration ─────────────────────────────────────────────────
 
-    string  constant NAME               = "BTC/USD Oracle Test";
+    string  constant NAME               = "BTC/USD Oracle Testnet4";
     string  constant DESCRIPTION        = "End-to-end test of ChainlinkPriceOracleResolver on Arbitrum Sepolia.";
     string  constant RESOLUTION_CRITERIA =
         "Chainlink BTC/USD feed (0x56a43EB56Da12C0dc1D972ACb089c06a5dEF8e69) at scheduledResolutionTime. "
@@ -33,12 +34,13 @@ contract CreateOracleMarketScript is Script {
     string  constant VALUE_UNIT         = "USD";
 
     uint256 constant BUCKET_WIDTH       = 1_000;    // $1K per bucket
-    uint256 constant MAX_BUCKET_ID      = 200;      // buckets 0-200 → $0-$200,999
+    uint256 constant MAX_BUCKET_ID      = 150;      // buckets 0-150 → $0-$150,999
 
-    // Seed a gaussian around $100K across buckets 95-105 ($95K-$105K).
-    uint256 constant SEED_LOW_BUCKET    = 95;
-    uint256 constant SEED_HIGH_BUCKET   = 105;
-    uint256 constant SEED_CENTER_BUCKET = 100;
+    // Seed a gaussian across buckets 65-85 ($65K-$85K) centered at $75K.
+    // Outside this range, buckets stay dormant until someone trades them.
+    uint256 constant SEED_LOW_BUCKET    = 65;
+    uint256 constant SEED_HIGH_BUCKET   = 85;
+    uint256 constant SEED_CENTER_BUCKET = 75;
 
     uint256 constant SEED_AMOUNT        = 200_000000;   // $200 pulled from vault (min $100 factory floor)
     uint256 constant ALPHA              = 50_000000;    // $50 alpha (~SEED/4)
@@ -46,7 +48,13 @@ contract CreateOracleMarketScript is Script {
 
     /// @notice Minutes from now until the market becomes resolvable.
     /// Keep small so you can exercise the full flow in one session.
-    uint256 constant RESOLVE_OFFSET_MIN = 10;
+    uint256 constant RESOLVE_OFFSET_MIN = 1;
+
+    // ─── Oracle Registration ─────────────────────────────────────────────────
+
+    address constant PRICE_FEED    = 0x56a43EB56Da12C0dc1D972ACb089c06a5dEF8e69; // BTC/USD, Arb Sepolia
+    uint256 constant PRICE_DIVISOR = 1e8;   // Chainlink USD feeds: 8 decimals
+    uint256 constant STALENESS_SEC = 3600;  // 1h — also the resolver default
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -72,6 +80,10 @@ contract CreateOracleMarketScript is Script {
         require(oracleResolver != address(0), "CHAINLINK_ORACLE_RESOLVER_ADDRESS not set");
         require(factory.creatorAllowance(deployer) > 0, "Deployer has no creator allowance");
         require(vault.deployableCapital() >= SEED_AMOUNT, "Vault: insufficient deployable capital");
+        require(
+            ChainlinkPriceOracleResolver(oracleResolver).owner() == deployer,
+            "Deployer must own the oracle resolver to auto-register the market"
+        );
 
         uint256 schedTime = block.timestamp + (RESOLVE_OFFSET_MIN * 60);
 
@@ -119,11 +131,17 @@ contract CreateOracleMarketScript is Script {
 
         vm.startBroadcast(pk);
         address marketAddr = factory.createMarket(p);
+        ChainlinkPriceOracleResolver(oracleResolver).registerMarket(
+            marketAddr,
+            PRICE_FEED,
+            PRICE_DIVISOR,
+            STALENESS_SEC
+        );
         vm.stopBroadcast();
 
         LMSRMarket market = LMSRMarket(marketAddr);
 
-        console.log("\n  Market created!");
+        console.log("\n  Market created & registered!");
         console.log("  Address:                 ", marketAddr);
         console.log("  Market ID:               ", market.marketId());
         console.log("  Pool balance:            ", market.poolBalance() / 1e6, "USDC");
@@ -132,20 +150,26 @@ contract CreateOracleMarketScript is Script {
         console.log("  Resolvable in ~min:      ", RESOLVE_OFFSET_MIN);
         console.log("  bucketWidth:             ", market.bucketWidth());
         console.log("  maxBucketId:             ", market.maxBucketId());
+        console.log("  Oracle priceFeed:        ", PRICE_FEED);
+        console.log("  Oracle priceDivisor:     ", PRICE_DIVISOR);
+        console.log("  Oracle stalenessSec:     ", STALENESS_SEC);
 
         require(market.resolver() == oracleResolver, "Resolver mismatch: resolve() will revert");
 
         console.log("\n  Copy to both core-contracts/.env and skepsis-be/.env:");
         console.log(string.concat("  MARKET_ADDRESS=", vm.toString(marketAddr)));
 
-        console.log("\n  Next: register this market with the oracle (see guide \xc2\xa72.3):");
+        console.log("\n  Next (DB sync only): POST /admin/oracle/register so the backend writes");
+        console.log("  oraclePriceFeed / oraclePriceDivisor / oracleStalenessSec / oracleRegisteredAt.");
+        console.log("  The market is ALREADY registered on-chain; this step just syncs the DB.");
         console.log(
             string.concat(
-                "  cast send $CHAINLINK_ORACLE_RESOLVER_ADDRESS ",
-                "'registerMarket(address,address,uint256,uint256)' ",
+                "  curl -X POST $BACKEND_URL/admin/oracle/register ",
+                "-H 'Authorization: Bearer $PRIVY_TOKEN' -H 'Content-Type: application/json' ",
+                "-d '{\"marketAddress\":\"",
                 vm.toString(marketAddr),
-                " 0x56a43EB56Da12C0dc1D972ACb089c06a5dEF8e69 100000000 3600 ",
-                "--rpc-url $ARB_SEPOLIA_RPC_URL --private-key $PRIVATE_KEY"
+                "\",\"priceFeed\":\"0x56a43EB56Da12C0dc1D972ACb089c06a5dEF8e69\",",
+                "\"priceDivisor\":\"100000000\",\"stalenessSec\":3600}'"
             )
         );
     }
