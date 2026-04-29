@@ -36,10 +36,12 @@ interface AggregatorV3Interface {
 ///
 /// ARCHITECTURE
 /// ═══════════════════════════════════════════════════════════════════
-///  Owner         → registerMarket(market, feed, divisor, staleness)   gates the config
-///  Anyone        → resolve(market, roundId)                           permissionless trigger
-///  LMSRMarket    → resolveMarket(value)                               enforces scheduled time
-///  Chainlink     → getRoundData(roundId) / latestRoundData()          source of truth for price
+///  Allowed registrar → registerMarket(market, feed, divisor, staleness)  gates the config
+///                      (allowance configured by owner; mirrors MarketFactory.creatorAllowance)
+///  Owner             → setRegistrarAllowance / unregisterMarket          admin surface
+///  Anyone            → resolve(market, roundId)                          permissionless trigger
+///  LMSRMarket        → resolveMarket(value)                              enforces scheduled time
+///  Chainlink         → getRoundData(roundId) / latestRoundData()         source of truth for price
 ///
 /// ROUND PINNING
 /// ═══════════════════════════════════════════════════════════════════
@@ -64,6 +66,12 @@ contract ChainlinkPriceOracleResolver is Ownable {
     /// @notice market address → its oracle config
     mapping(address => MarketConfig) public configs;
 
+    /// @notice Per-address quota of remaining registerMarket calls.
+    ///         Owner sets via setRegistrarAllowance / addRegistrarAllowance.
+    ///         Decrements by 1 on every successful registerMarket call.
+    ///         Mirrors MarketFactory.creatorAllowance — same shape, same admin pattern.
+    mapping(address => uint256) public registrarAllowance;
+
     // ─── Events ──────────────────────────────────────────────────────────────
 
     event MarketRegistered(
@@ -80,6 +88,8 @@ contract ChainlinkPriceOracleResolver is Ownable {
         uint256 resolvedValue,
         uint256 winningBucket
     );
+    event RegistrarAllowanceSet(address indexed registrar, uint256 slots);
+    event RegistrarAllowanceAdded(address indexed registrar, uint256 added, uint256 newTotal);
 
     // ─── Errors ──────────────────────────────────────────────────────────────
 
@@ -96,6 +106,8 @@ contract ChainlinkPriceOracleResolver is Ownable {
     error RoundTooNew();
     error RoundTooOld();
     error NoScheduledTime();
+    error NotAllowedRegistrar();
+    error InvalidSlots();
 
     // ─── Constructor ─────────────────────────────────────────────────────────
 
@@ -103,8 +115,28 @@ contract ChainlinkPriceOracleResolver is Ownable {
 
     // ─── Admin ───────────────────────────────────────────────────────────────
 
+    /// @notice Set a registrar's remaining registerMarket quota (overwrites existing value).
+    /// @dev    Mirrors MarketFactory.setCreatorAllowance — same semantics.
+    /// @param  registrar   Address whose allowance is being updated. Set slots=0 to revoke.
+    /// @param  slots       Total number of markets they may register.
+    function setRegistrarAllowance(address registrar, uint256 slots) external onlyOwner {
+        if (registrar == address(0)) revert ZeroAddress();
+        registrarAllowance[registrar] = slots;
+        emit RegistrarAllowanceSet(registrar, slots);
+    }
+
+    /// @notice Add slots on top of a registrar's existing allowance.
+    /// @dev    Mirrors MarketFactory.addCreatorAllowance — same semantics.
+    function addRegistrarAllowance(address registrar, uint256 slots) external onlyOwner {
+        if (registrar == address(0)) revert ZeroAddress();
+        if (slots == 0) revert InvalidSlots();
+        registrarAllowance[registrar] += slots;
+        emit RegistrarAllowanceAdded(registrar, slots, registrarAllowance[registrar]);
+    }
+
     /// @notice Register a market so this contract can resolve it via Chainlink.
-    /// @dev    Requires the market's `resolver` to already be set to address(this).
+    /// @dev    Caller must hold a non-zero registrarAllowance balance. Requires
+    ///         the market's `resolver` to already be set to address(this).
     /// @param market               LMSRMarket address
     /// @param priceFeed            Chainlink AggregatorV3 feed address
     /// @param priceDivisor         raw / priceDivisor = value in market's unit space
@@ -116,7 +148,14 @@ contract ChainlinkPriceOracleResolver is Ownable {
         address priceFeed,
         uint256 priceDivisor,
         uint256 stalenessThreshold
-    ) external onlyOwner {
+    ) external {
+        // Allowance gate first (mirrors MarketFactory.createMarket).
+        // Reverts roll back state, so on a later failed validation the slot
+        // is refunded automatically — same behavior as the factory.
+        uint256 allowance = registrarAllowance[msg.sender];
+        if (allowance == 0) revert NotAllowedRegistrar();
+        registrarAllowance[msg.sender] = allowance - 1;
+
         if (market == address(0) || priceFeed == address(0)) revert ZeroAddress();
         if (priceDivisor == 0) revert ZeroDivisor();
         if (configs[market].registered) revert AlreadyRegistered();

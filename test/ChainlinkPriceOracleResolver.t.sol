@@ -77,6 +77,11 @@ contract ChainlinkPriceOracleResolverTest is Test {
         feed  = new MockAggregatorV3();
         oracle = new ChainlinkPriceOracleResolver(owner);
 
+        // Grant owner registerMarket allowance — mirrors DeployOracle.s.sol seeding
+        // the deployer with INITIAL_DEPLOYER_SLOTS at deploy time.
+        vm.prank(owner);
+        oracle.setRegistrarAllowance(owner, 1000);
+
         scheduledTime = block.timestamp + 1 days;
 
         market = _deployMarket(scheduledTime, address(oracle));
@@ -174,10 +179,102 @@ contract ChainlinkPriceOracleResolverTest is Test {
     // Oracle — registration
     // ═══════════════════════════════════════════════════════════════════════
 
-    function test_registerMarket_onlyOwner() public {
+    function test_registerMarket_revertsWhenCallerHasNoAllowance() public {
+        // randomUser has zero registrarAllowance — should revert.
+        vm.prank(randomUser);
+        vm.expectRevert(ChainlinkPriceOracleResolver.NotAllowedRegistrar.selector);
+        oracle.registerMarket(address(market), address(feed), 1e8, 3600);
+    }
+
+    function test_registerMarket_decrementsAllowance() public {
+        uint256 before_ = oracle.registrarAllowance(owner);
+        vm.prank(owner);
+        oracle.registerMarket(address(market), address(feed), 1e8, 3600);
+        assertEq(oracle.registrarAllowance(owner), before_ - 1);
+    }
+
+    function test_registerMarket_revertsWhenAllowanceExhausted() public {
+        // Reset owner's allowance to exactly 1, consume it, then expect revert.
+        vm.prank(owner);
+        oracle.setRegistrarAllowance(owner, 1);
+
+        vm.prank(owner);
+        oracle.registerMarket(address(market), address(feed), 1e8, 3600);
+        assertEq(oracle.registrarAllowance(owner), 0);
+
+        // Second register would need a fresh market (already-registered guard
+        // would otherwise fire first). Use a second market.
+        LMSRMarket market2 = _deployMarket(scheduledTime + 1 days, address(oracle));
+        usdc.mint(address(market2), POOL);
+
+        vm.prank(owner);
+        vm.expectRevert(ChainlinkPriceOracleResolver.NotAllowedRegistrar.selector);
+        oracle.registerMarket(address(market2), address(feed), 1e8, 3600);
+    }
+
+    function test_registerMarket_worksForAllowedNonOwner() public {
+        vm.prank(owner);
+        oracle.setRegistrarAllowance(creator, 5);
+
+        vm.prank(creator);
+        oracle.registerMarket(address(market), address(feed), 1e8, 3600);
+        assertEq(oracle.registrarAllowance(creator), 4);
+
+        (, , , bool registered) = oracle.configs(address(market));
+        assertTrue(registered);
+    }
+
+    function test_registerMarket_failedValidationRefundsAllowance() public {
+        // Resolver mismatch should revert and roll back the allowance decrement.
+        LMSRMarket otherMarket = _deployMarket(scheduledTime, address(0xDEAD));
+
+        uint256 before_ = oracle.registrarAllowance(owner);
+        vm.prank(owner);
+        vm.expectRevert(ChainlinkPriceOracleResolver.ResolverMismatch.selector);
+        oracle.registerMarket(address(otherMarket), address(feed), 1e8, 3600);
+
+        // EVM revert rolls back state — allowance unchanged.
+        assertEq(oracle.registrarAllowance(owner), before_);
+    }
+
+    function test_setRegistrarAllowance_onlyOwner() public {
         vm.prank(randomUser);
         vm.expectRevert();
-        oracle.registerMarket(address(market), address(feed), 1e8, 3600);
+        oracle.setRegistrarAllowance(creator, 10);
+    }
+
+    function test_setRegistrarAllowance_revertsOnZeroAddress() public {
+        vm.prank(owner);
+        vm.expectRevert(ChainlinkPriceOracleResolver.ZeroAddress.selector);
+        oracle.setRegistrarAllowance(address(0), 10);
+    }
+
+    function test_setRegistrarAllowance_overwrites() public {
+        vm.startPrank(owner);
+        oracle.setRegistrarAllowance(creator, 10);
+        oracle.setRegistrarAllowance(creator, 3);
+        vm.stopPrank();
+        assertEq(oracle.registrarAllowance(creator), 3);
+    }
+
+    function test_addRegistrarAllowance_addsOnTop() public {
+        vm.startPrank(owner);
+        oracle.setRegistrarAllowance(creator, 5);
+        oracle.addRegistrarAllowance(creator, 7);
+        vm.stopPrank();
+        assertEq(oracle.registrarAllowance(creator), 12);
+    }
+
+    function test_addRegistrarAllowance_revertsOnZeroSlots() public {
+        vm.prank(owner);
+        vm.expectRevert(ChainlinkPriceOracleResolver.InvalidSlots.selector);
+        oracle.addRegistrarAllowance(creator, 0);
+    }
+
+    function test_addRegistrarAllowance_onlyOwner() public {
+        vm.prank(randomUser);
+        vm.expectRevert();
+        oracle.addRegistrarAllowance(creator, 10);
     }
 
     function test_registerMarket_revertsOnZeroAddresses() public {
