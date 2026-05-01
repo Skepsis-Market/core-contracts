@@ -140,7 +140,7 @@ contract RangeEconomicsWalkthroughTest is Test {
         // ────────────────────────────────────────────────────────────────
         _header("STEP 1: BUY $100 on range [114500, 114800)");
 
-        uint256 sharesStep1 = market.buySharesRange(
+        (uint256 sharesStep1,,,,,) = market.buySharesRange(
             RANGE_LO, RANGE_HI, BUY_AMOUNT, 0, 0, address(0)
         );
 
@@ -168,7 +168,7 @@ contract RangeEconomicsWalkthroughTest is Test {
         _header("STEP 2: SELL HALF shares from Step 1");
         console2.log("  Selling shares          :", halfShares);
 
-        uint256 sellReturn = market.sellSharesRange(
+        (uint256 sellReturn,,,) = market.sellSharesRange(
             RANGE_LO, RANGE_HI, halfShares, 0, address(0)
         );
 
@@ -209,7 +209,7 @@ contract RangeEconomicsWalkthroughTest is Test {
 
         _printQuote("Quote BEFORE 2nd buy");
 
-        uint256 sharesStep3 = market.buySharesRange(
+        (uint256 sharesStep3,,,,,) = market.buySharesRange(
             RANGE_LO, RANGE_HI, BUY_AMOUNT, 0, 0, address(0)
         );
 
@@ -310,7 +310,7 @@ contract RangeEconomicsWalkthroughTest is Test {
     /// @dev Simulate selling `shares` at current market state using snapshot/revert
     function _simulateSellReturn(uint256 shares) internal returns (uint256) {
         uint256 snap = vm.snapshotState();
-        uint256 payout = market.sellSharesRange(RANGE_LO, RANGE_HI, shares, 0, address(0));
+        (uint256 payout,,,) = market.sellSharesRange(RANGE_LO, RANGE_HI, shares, 0, address(0));
         vm.revertToState(snap);
         return payout;
     }

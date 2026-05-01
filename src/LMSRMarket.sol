@@ -158,7 +158,8 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 indexed marketId,
         address indexed creator,
         uint256 amount,
-        int256 profit
+        int256 profit,
+        uint256 newPoolBalance
     );
 
     event AlphaDecayConfigured(
@@ -178,7 +179,7 @@ contract LMSRMarket is ReentrancyGuard {
 
     event LPVaultSet(uint256 indexed marketId, address indexed vault);
     event LiquidityAdded(uint256 indexed marketId, address indexed provider, uint256 amountUSDC);
-    event SurplusWithdrawn(uint256 indexed marketId, address indexed caller, address indexed recipient, uint256 amountUSDC);
+    event SurplusWithdrawn(uint256 indexed marketId, address indexed caller, address indexed recipient, uint256 amountUSDC, uint256 newPoolBalance);
     event MarketEmergencyPaused(uint256 indexed marketId);
     event MarketEmergencyUnpaused(uint256 indexed marketId);
     event RouterUpdated(uint256 indexed marketId, address indexed router);
@@ -483,7 +484,7 @@ contract LMSRMarket is ReentrancyGuard {
         totalSurplusWithdrawn += withdrawnUSDC; // reduce net cost basis — this capital already returned
         IERC20(address(usdcToken)).safeTransfer(recipient, withdrawnUSDC);
 
-        emit SurplusWithdrawn(marketId, msg.sender, recipient, withdrawnUSDC);
+        emit SurplusWithdrawn(marketId, msg.sender, recipient, withdrawnUSDC, poolBalance);
     }
 
     modifier onlyActive() {
@@ -633,7 +634,20 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 minSharesOut,
         uint256 targetShares,
         address recipient
-    ) external nonReentrant onlyActive onlyRouter returns (uint256 shares) {
+    )
+        external
+        nonReentrant
+        onlyActive
+        onlyRouter
+        returns (
+            uint256 shares,
+            uint256 actualCost,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance,
+            uint256 newMaxLiability
+        )
+    {
         if (recipient == address(0)) recipient = msg.sender;
         _syncAlpha();
         if (amountUSDC == 0) revert InvalidParameters();
@@ -658,7 +672,6 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
         uint256 netAmount = amountUSDC - feesUSDC;
 
-        uint256 actualCost;
         {
             uint256 sumBefore = _tree.totalSum();
             uint256 rSum = _tree.rangeSum(uint32(startBucket), uint32(endBucket));
@@ -685,40 +698,52 @@ contract LMSRMarket is ReentrancyGuard {
 
         if (shares < minSharesOut) revert InvalidParameters();
 
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
+        protocolFeeUSDC = (feesUSDC * protocolFeeBps) / 10000;
+        lpFeeUSDC = feesUSDC - protocolFeeUSDC;
 
-        _validateRangeSolvency(startBucket, endBucket, shares, actualCost + lpFee);
-        _applyRangeBuy(startBucket, endBucket, shares, actualCost + lpFee);
+        _validateRangeSolvency(startBucket, endBucket, shares, actualCost + lpFeeUSDC);
+        _applyRangeBuy(startBucket, endBucket, shares, actualCost + lpFeeUSDC);
 
         // Only pull what's needed: cost + fees (refund unused budget)
         uint256 totalPull = actualCost + feesUSDC;
 
-        feesCollectedLP += lpFee;
-        lpFeesAccrued += lpFee;
-        feesCollectedProtocol += protocolFee;
+        feesCollectedLP += lpFeeUSDC;
+        lpFeesAccrued += lpFeeUSDC;
+        feesCollectedProtocol += protocolFeeUSDC;
         totalVolume += totalPull;
         IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), totalPull);
-        _routeProtocolFee(protocolFee);
+        _routeProtocolFee(protocolFeeUSDC);
 
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).mint(recipient, _tokenIdForRange(startBucket, endBucket), shares);
         }
 
+        // Post-trade snapshot — lets the router's SharesBought event carry
+        // absolute values so the indexer never needs to re-read the contract
+        // to refresh poolBalance / maxLiability.
+        newPoolBalance = poolBalance;
+        newMaxLiability = maxLiability;
     }
 
     /// @dev Single-bucket buy: direct LMSR cost function (no binary search needed)
     function _executeBuySingle(uint256 bucketId, uint256 amountUSDC, uint256 minSharesOut, address recipient)
         internal
-        returns (uint256 sharesMinted)
+        returns (
+            uint256 sharesMinted,
+            uint256 actualCost,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance,
+            uint256 newMaxLiability
+        )
     {
         uint256 C_before = _calculateCostFunction();
         uint256 sumOther = _getSumOther(bucketId);
 
         uint256 feesUSDC = (amountUSDC * feeBps) / 10000;
-        uint256 netCostUSDC = amountUSDC - feesUSDC;
+        actualCost = amountUSDC - feesUSDC; // single-bucket path consumes the full netCost; refund-on-cap not used here
 
-        uint256 C_new = C_before + netCostUSDC;
+        uint256 C_new = C_before + actualCost;
         uint256 ratio = (C_new * WAD) / alpha;
         uint256 expCNewOverAlpha = ratio.exp();
 
@@ -730,8 +755,8 @@ contract LMSRMarket is ReentrancyGuard {
         sharesMinted = newShares - buckets[bucketId].shares;
         if (sharesMinted < minSharesOut) revert InvalidParameters();
 
-        uint256 newPoolBalance = poolBalance + netCostUSDC;
-        if (newShares > newPoolBalance + SOLVENCY_DUST) {
+        uint256 projectedPool = poolBalance + actualCost;
+        if (newShares > projectedPool + SOLVENCY_DUST) {
             revert SolvencyViolation();
         }
 
@@ -743,22 +768,25 @@ contract LMSRMarket is ReentrancyGuard {
 
         _applyTreeBuyFactor(uint32(bucketId), uint32(bucketId), sharesMinted);
 
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
+        protocolFeeUSDC = (feesUSDC * protocolFeeBps) / 10000;
+        lpFeeUSDC = feesUSDC - protocolFeeUSDC;
 
-        poolBalance += netCostUSDC + lpFee;
-        feesCollectedLP += lpFee;
-        lpFeesAccrued += lpFee;
-        feesCollectedProtocol += protocolFee;
+        poolBalance += actualCost + lpFeeUSDC;
+        feesCollectedLP += lpFeeUSDC;
+        lpFeesAccrued += lpFeeUSDC;
+        feesCollectedProtocol += protocolFeeUSDC;
         totalVolume += amountUSDC;
 
         IERC20(address(usdcToken)).safeTransferFrom(msg.sender, address(this), amountUSDC);
-        _routeProtocolFee(protocolFee);
+        _routeProtocolFee(protocolFeeUSDC);
 
         if (_positionTokenEnabled()) {
             IPositionNFT(positionNFT).mint(recipient, _tokenIdForRange(bucketId, bucketId), sharesMinted);
         }
 
+        // Post-trade snapshot for the router event.
+        newPoolBalance = poolBalance;
+        newMaxLiability = maxLiability;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -776,7 +804,18 @@ contract LMSRMarket is ReentrancyGuard {
         uint256 sharesToSell,
         uint256 minUsdcOut,
         address recipient
-    ) external nonReentrant onlyActive onlyRouter returns (uint256 payoutUSDC) {
+    )
+        external
+        nonReentrant
+        onlyActive
+        onlyRouter
+        returns (
+            uint256 payoutUSDC,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance
+        )
+    {
         if (recipient == address(0)) recipient = msg.sender;
         _syncAlpha();
         if (sharesToSell == 0) revert InvalidParameters();
@@ -807,14 +846,14 @@ contract LMSRMarket is ReentrancyGuard {
         payoutUSDC = grossPayout - feesUSDC;
         if (payoutUSDC < minUsdcOut) revert InvalidParameters();
 
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
+        protocolFeeUSDC = (feesUSDC * protocolFeeBps) / 10000;
+        lpFeeUSDC = feesUSDC - protocolFeeUSDC;
 
-        _applyRangeSell(startBucket, endBucket, sharesToSell, payoutUSDC + protocolFee);
+        _applyRangeSell(startBucket, endBucket, sharesToSell, payoutUSDC + protocolFeeUSDC);
 
-        feesCollectedLP += lpFee;
-        lpFeesAccrued += lpFee;
-        feesCollectedProtocol += protocolFee;
+        feesCollectedLP += lpFeeUSDC;
+        lpFeesAccrued += lpFeeUSDC;
+        feesCollectedProtocol += protocolFeeUSDC;
         totalVolume += grossPayout;
 
         // Solvency check
@@ -832,15 +871,21 @@ contract LMSRMarket is ReentrancyGuard {
             IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(startBucket, endBucket), sharesToSell);
         }
 
-        _routeProtocolFee(protocolFee);
+        _routeProtocolFee(protocolFeeUSDC);
         IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
+        newPoolBalance = poolBalance;
     }
 
     /// @dev Single-bucket sell: direct LMSR cost function
     function _executeSellSingle(uint256 bucketId, uint256 sharesToSell, uint256 minPayoutOut, address recipient)
         internal
-        returns (uint256 payoutUSDC)
+        returns (
+            uint256 payoutUSDC,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance
+        )
     {
         uint256 C_before = _calculateCostFunction();
         uint256 sumOther = _getSumOther(bucketId);
@@ -862,13 +907,13 @@ contract LMSRMarket is ReentrancyGuard {
         buckets[bucketId].shares = newShares;
         _applyTreeSellFactor(uint32(bucketId), uint32(bucketId), sharesToSell);
 
-        uint256 protocolFee = (feesUSDC * protocolFeeBps) / 10000;
-        uint256 lpFee = feesUSDC - protocolFee;
+        protocolFeeUSDC = (feesUSDC * protocolFeeBps) / 10000;
+        lpFeeUSDC = feesUSDC - protocolFeeUSDC;
 
-        poolBalance -= (payoutUSDC + protocolFee);
-        feesCollectedLP += lpFee;
-        lpFeesAccrued += lpFee;
-        feesCollectedProtocol += protocolFee;
+        poolBalance -= (payoutUSDC + protocolFeeUSDC);
+        feesCollectedLP += lpFeeUSDC;
+        lpFeesAccrued += lpFeeUSDC;
+        feesCollectedProtocol += protocolFeeUSDC;
         totalVolume += grossPayoutUSDC;
 
         if (bucketId == currentMaxBucketId) {
@@ -881,9 +926,10 @@ contract LMSRMarket is ReentrancyGuard {
             IPositionNFT(positionNFT).burn(msg.sender, _tokenIdForRange(bucketId, bucketId), sharesToSell);
         }
 
-        _routeProtocolFee(protocolFee);
+        _routeProtocolFee(protocolFeeUSDC);
         IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
+        newPoolBalance = poolBalance;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -895,7 +941,16 @@ contract LMSRMarket is ReentrancyGuard {
     ///      claims full NFT balance (no partial claims). Works for single and range positions.
     /// @param tokenId The ERC-1155 position token ID (encodes marketId + bucket range)
     /// @return payoutUSDC Amount of USDC received ($1 per share)
-    function claim(uint256 tokenId, address recipient) external nonReentrant onlyRouter returns (uint256 payoutUSDC) {
+    function claim(uint256 tokenId, address recipient)
+        external
+        nonReentrant
+        onlyRouter
+        returns (
+            uint256 payoutUSDC,
+            uint256 newPoolBalance,
+            uint256 newWinningBucketShares
+        )
+    {
         if (recipient == address(0)) recipient = msg.sender;
         if (status != MarketStatus.RESOLVED) revert MarketNotActive();
 
@@ -919,6 +974,9 @@ contract LMSRMarket is ReentrancyGuard {
         IPositionNFT(positionNFT).burn(msg.sender, tokenId, balance);
         IERC20(address(usdcToken)).safeTransfer(recipient, payoutUSDC);
 
+        // Post-claim snapshot for the router event.
+        newPoolBalance = poolBalance;
+        newWinningBucketShares = buckets[winningBucket].shares;
     }
 
     /// @notice Get quote for buying shares across a range
@@ -1190,7 +1248,7 @@ contract LMSRMarket is ReentrancyGuard {
         // Transfer to caller: creator or lpVault (vault recycles capital into next markets)
         IERC20(address(usdcToken)).safeTransfer(msg.sender, withdrawAmount);
 
-        emit LPWithdrawal(marketId, msg.sender, withdrawAmount, profit);
+        emit LPWithdrawal(marketId, msg.sender, withdrawAmount, profit, poolBalance);
     }
 
     /// @notice Get LP profitability metrics

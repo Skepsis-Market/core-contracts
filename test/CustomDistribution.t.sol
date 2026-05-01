@@ -211,7 +211,7 @@ contract CustomDistributionTest is Test {
         uint256 upper = lower + market.bucketWidth();
 
         uint256 g0 = gasleft();
-        uint256 sharesBought = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
+        (uint256 sharesBought,,,,,) = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
         uint256 g1 = gasleft();
         vm.stopPrank();
 
@@ -256,7 +256,7 @@ contract CustomDistributionTest is Test {
         uint256 upper = lower + market.bucketWidth();
 
         uint256 g0 = gasleft();
-        uint256 sharesBought = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
+        (uint256 sharesBought,,,,,) = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
         uint256 g1 = gasleft();
         vm.stopPrank();
 
@@ -302,7 +302,7 @@ contract CustomDistributionTest is Test {
 
         uint256 lower = 83 * market.bucketWidth(); // bucket 83 = $83K
         uint256 upper = lower + market.bucketWidth();
-        uint256 sharesBought = market.buySharesRange(lower, upper, 5000_000000, 0, 0, trader);
+        (uint256 sharesBought,,,,,) = market.buySharesRange(lower, upper, 5000_000000, 0, 0, trader);
         vm.stopPrank();
 
         // Resolve at $83.5K = bucket 83

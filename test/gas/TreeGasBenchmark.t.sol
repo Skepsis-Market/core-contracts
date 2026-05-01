@@ -81,11 +81,13 @@ contract TreeGasBenchmarkTest is Test {
 
     function _buyBucket(LMSRMarket market, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
         uint256 lower = bucketId * market.bucketWidth();
-        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+        (uint256 shares,,,,,) = market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+        return shares;
     }
     function _sellBucket(LMSRMarket market, uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
         uint256 lower = bucketId * market.bucketWidth();
-        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+        (uint256 payoutUSDC,,,) = market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+        return payoutUSDC;
     }
 
     function test_gas_buyShares_single_19buckets() public {

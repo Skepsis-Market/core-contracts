@@ -69,7 +69,7 @@ contract ProtocolFeeRoutingTest is Test {
 
     function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
         uint256 lower = bucketId * market.bucketWidth();
-        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+        (uint256 _bs,,,,,) = market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0)); return _bs;
     }
 
     function test_protocolCollector_receivesFeeOnBuy() public {

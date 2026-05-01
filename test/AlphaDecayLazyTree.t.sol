@@ -72,7 +72,7 @@ contract AlphaDecayLazyTreeTest is Test {
         // This buy triggers _syncAlpha() internally
         // Before P5-C-01 fix, this reverted with "BucketTree: length mismatch"
         vm.prank(trader);
-        uint256 shares = market.buySharesRange(100000, 101000, 100_000000, 0, 0, trader);
+        (uint256 shares,,,,,) = market.buySharesRange(100000, 101000, 100_000000, 0, 0, trader);
         assertGt(shares, 0, "Should receive shares after alpha sync");
 
         // Verify alpha actually decayed
@@ -90,7 +90,7 @@ contract AlphaDecayLazyTreeTest is Test {
 
         // Alpha sync with expanded tree (now covers [50, 104] instead of [100, 104])
         vm.prank(trader);
-        uint256 shares = market.buySharesRange(101000, 102000, 100_000000, 0, 0, trader);
+        (uint256 shares,,,,,) = market.buySharesRange(101000, 102000, 100_000000, 0, 0, trader);
         assertGt(shares, 0, "Should receive shares after alpha sync with grown tree");
     }
 
@@ -105,7 +105,7 @@ contract AlphaDecayLazyTreeTest is Test {
 
         // Alpha sync with tree covering [100, 150]
         vm.prank(trader);
-        uint256 shares = market.buySharesRange(102000, 103000, 100_000000, 0, 0, trader);
+        (uint256 shares,,,,,) = market.buySharesRange(102000, 103000, 100_000000, 0, 0, trader);
         assertGt(shares, 0);
     }
 
@@ -132,14 +132,14 @@ contract AlphaDecayLazyTreeTest is Test {
     function test_sellAfterAlphaSync() public {
         // Buy first
         vm.prank(trader);
-        uint256 shares = market.buySharesRange(100000, 101000, 500_000000, 0, 0, trader);
+        (uint256 shares,,,,,) = market.buySharesRange(100000, 101000, 500_000000, 0, 0, trader);
 
         // Warp and trigger sync
         vm.warp(block.timestamp + 31 minutes);
 
         // Sell should work after alpha sync
         vm.prank(trader);
-        uint256 payout = market.sellSharesRange(100000, 101000, shares / 2, 0, trader);
+        (uint256 payout,,,) = market.sellSharesRange(100000, 101000, shares / 2, 0, trader);
         assertGt(payout, 0, "Should receive payout after sell with alpha sync");
     }
 }

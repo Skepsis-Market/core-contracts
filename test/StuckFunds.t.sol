@@ -79,7 +79,7 @@ contract StuckFundsTest is Test {
         uint256 buyAmount = 5_000_000000; // $5K
         uint256 lower = 2 * market.bucketWidth();
         uint256 upper = lower + market.bucketWidth();
-        uint256 sharesBought = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
+        (uint256 sharesBought,,,,,) = market.buySharesRange(lower, upper, buyAmount, 0, 0, trader);
         vm.stopPrank();
 
         (uint256 bucket2Shares,,,) = market.buckets(2);

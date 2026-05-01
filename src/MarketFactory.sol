@@ -95,7 +95,9 @@ contract MarketFactory is Ownable {
         address indexed marketAddress,
         address indexed creator,
         uint256 poolBalance,
-        uint256 bucketCount
+        uint256 bucketCount,
+        uint256[] seededBucketIds,
+        uint256[] seededShares
     );
     event CreatorAllowanceSet(address indexed creator, uint256 allowance);
     event CreatorAllowanceAdded(address indexed creator, uint256 added, uint256 total);
@@ -291,7 +293,18 @@ contract MarketFactory is Ownable {
             market.setMaxRangeWidth(rangeWidth);
         }
 
-        emit MarketCreated(marketId, marketAddress, msg.sender, p.seedAmount, p.seededBucketIds.length);
+        // Emit seeded bucket layout in the event so the indexer can hydrate the
+        // Bucket DB rows directly from the log instead of running 882 reads of
+        // `buckets(i)` against the freshly-deployed market clone.
+        emit MarketCreated(
+            marketId,
+            marketAddress,
+            msg.sender,
+            p.seedAmount,
+            p.seededBucketIds.length,
+            p.seededBucketIds,
+            p.seededShares
+        );
     }
 
     // ─────────────────── Admin ────────────────────────────────────────────────

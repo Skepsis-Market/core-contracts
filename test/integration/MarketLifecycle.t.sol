@@ -156,15 +156,18 @@ contract MarketLifecycleTest is Test {
 
     function _buyBucket(LMSRMarket m, uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
         uint256 lower = bucketId * m.bucketWidth();
-        return m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
+        (uint256 shares,,,,,) = m.buySharesRange(lower, lower + m.bucketWidth(), amount, minShares, 0, address(0));
+        return shares;
     }
     function _sellBucket(LMSRMarket m, uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
         uint256 lower = bucketId * m.bucketWidth();
-        return m.sellSharesRange(lower, lower + m.bucketWidth(), shares, minPayout, address(0));
+        (uint256 payoutUSDC,,,) = m.sellSharesRange(lower, lower + m.bucketWidth(), shares, minPayout, address(0));
+        return payoutUSDC;
     }
     function _claimBucket(LMSRMarket m, uint256 bucketId) internal returns (uint256) {
         uint256 tokenId = (uint256(uint128(m.marketId())) << 128) | (uint256(uint64(bucketId)) << 64) | uint256(uint64(bucketId));
-        return m.claim(tokenId, address(0));
+        (uint256 payoutUSDC,,) = m.claim(tokenId, address(0));
+        return payoutUSDC;
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────

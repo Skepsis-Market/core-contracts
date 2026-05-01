@@ -29,29 +29,49 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
     /// @notice Max USDC per buy (6 decimals). 0 = no limit.
     uint256 public maxBuyAmount;
 
+    /// @dev Enriched with post-trade state so the indexer can maintain
+    ///      `poolBalance` / `maxLiability` from event deltas alone (no
+    ///      recurring re-reads of the market contract). `actualCost` is the
+    ///      LMSR-priced cost actually charged (may be < `amountUSDC` because
+    ///      the contract refunds unused budget for range buys).
     event SharesBought(
         address indexed market,
         address indexed buyer,
         uint256 rangeLower,
         uint256 rangeUpper,
         uint256 shares,
-        uint256 amountUSDC
+        uint256 amountUSDC,
+        uint256 actualCost,
+        uint256 lpFeeUSDC,
+        uint256 protocolFeeUSDC,
+        uint256 newPoolBalance,
+        uint256 newMaxLiability
     );
 
+    /// @dev Enriched with fee split + post-trade `newPoolBalance` for the
+    ///      same drift-elimination reason as `SharesBought`.
     event SharesSold(
         address indexed market,
         address indexed seller,
         uint256 rangeLower,
         uint256 rangeUpper,
         uint256 shares,
-        uint256 payoutUSDC
+        uint256 payoutUSDC,
+        uint256 lpFeeUSDC,
+        uint256 protocolFeeUSDC,
+        uint256 newPoolBalance
     );
 
+    /// @dev `newWinningBucketShares` lets the indexer write the post-claim
+    ///      bucket shares value directly instead of computing a delta —
+    ///      self-healing if any prior trade event was missed.
     event WinningsClaimed(
         address indexed market,
         address indexed claimer,
         uint256 tokenId,
-        uint256 payoutUSDC
+        uint256 payoutUSDC,
+        uint256 newPoolBalance,
+        uint256 newWinningBucketShares
     );
 
     event MaxBuyAmountUpdated(uint256 oldValue, uint256 newValue);
@@ -105,10 +125,30 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
         if (maxBuyAmount > 0 && amountUSDC > maxBuyAmount) revert BuyExceedsLimit();
         IERC20(address(usdc)).safeTransferFrom(msg.sender, address(this), amountUSDC);
         IERC20(address(usdc)).forceApprove(address(market), amountUSDC);
-        shares = market.buySharesRange(
+        (
+            uint256 _shares,
+            uint256 actualCost,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance,
+            uint256 newMaxLiability
+        ) = market.buySharesRange(
             rangeLower, rangeUpper, amountUSDC, minSharesOut, targetShares, msg.sender
         );
-        emit SharesBought(address(market), msg.sender, rangeLower, rangeUpper, shares, amountUSDC);
+        shares = _shares;
+        emit SharesBought(
+            address(market),
+            msg.sender,
+            rangeLower,
+            rangeUpper,
+            shares,
+            amountUSDC,
+            actualCost,
+            lpFeeUSDC,
+            protocolFeeUSDC,
+            newPoolBalance,
+            newMaxLiability
+        );
     }
 
     /// @notice Buy with EIP-2612 permit — zero prior USDC approval needed
@@ -129,10 +169,30 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
         usdc.permit(msg.sender, address(this), amountUSDC, deadline, v, r, s);
         IERC20(address(usdc)).safeTransferFrom(msg.sender, address(this), amountUSDC);
         IERC20(address(usdc)).forceApprove(address(market), amountUSDC);
-        shares = market.buySharesRange(
+        (
+            uint256 _shares,
+            uint256 actualCost,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance,
+            uint256 newMaxLiability
+        ) = market.buySharesRange(
             rangeLower, rangeUpper, amountUSDC, minSharesOut, targetShares, msg.sender
         );
-        emit SharesBought(address(market), msg.sender, rangeLower, rangeUpper, shares, amountUSDC);
+        shares = _shares;
+        emit SharesBought(
+            address(market),
+            msg.sender,
+            rangeLower,
+            rangeUpper,
+            shares,
+            amountUSDC,
+            actualCost,
+            lpFeeUSDC,
+            protocolFeeUSDC,
+            newPoolBalance,
+            newMaxLiability
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -162,10 +222,26 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
         positionNFT.safeTransferFrom(msg.sender, address(this), tokenId, sharesToSell, "");
 
         // Sell — market burns from router, sends USDC to user
-        payoutUSDC = market.sellSharesRange(
+        (
+            uint256 _payoutUSDC,
+            uint256 lpFeeUSDC,
+            uint256 protocolFeeUSDC,
+            uint256 newPoolBalance
+        ) = market.sellSharesRange(
             rangeLower, rangeUpper, sharesToSell, minUsdcOut, msg.sender
         );
-        emit SharesSold(address(market), msg.sender, rangeLower, rangeUpper, sharesToSell, payoutUSDC);
+        payoutUSDC = _payoutUSDC;
+        emit SharesSold(
+            address(market),
+            msg.sender,
+            rangeLower,
+            rangeUpper,
+            sharesToSell,
+            payoutUSDC,
+            lpFeeUSDC,
+            protocolFeeUSDC,
+            newPoolBalance
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -185,8 +261,20 @@ contract TradeRouter is Ownable, Pausable, ReentrancyGuard {
         positionNFT.safeTransferFrom(msg.sender, address(this), tokenId, balance, "");
 
         // Claim — market burns from router, sends USDC to user
-        payoutUSDC = market.claim(tokenId, msg.sender);
-        emit WinningsClaimed(address(market), msg.sender, tokenId, payoutUSDC);
+        (
+            uint256 _payoutUSDC,
+            uint256 newPoolBalance,
+            uint256 newWinningBucketShares
+        ) = market.claim(tokenId, msg.sender);
+        payoutUSDC = _payoutUSDC;
+        emit WinningsClaimed(
+            address(market),
+            msg.sender,
+            tokenId,
+            payoutUSDC,
+            newPoolBalance,
+            newWinningBucketShares
+        );
     }
 
     /// @notice ERC-1155 receiver — required for safeTransferFrom

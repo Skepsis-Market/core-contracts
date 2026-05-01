@@ -87,12 +87,12 @@ contract RoundTripEconomics2BucketTest is Test {
 
     function _buyBucket(uint256 bucketId, uint256 amount, uint256 minShares) internal returns (uint256) {
         uint256 lower = bucketId * market.bucketWidth();
-        return market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0));
+        (uint256 _bs,,,,,) = market.buySharesRange(lower, lower + market.bucketWidth(), amount, minShares, 0, address(0)); return _bs;
     }
 
     function _sellBucket(uint256 bucketId, uint256 shares, uint256 minPayout) internal returns (uint256) {
         uint256 lower = bucketId * market.bucketWidth();
-        return market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0));
+        (uint256 _ss,,,) = market.sellSharesRange(lower, lower + market.bucketWidth(), shares, minPayout, address(0)); return _ss;
     }
 
     function test_report_buy10_and_sell_immediately_table() public {

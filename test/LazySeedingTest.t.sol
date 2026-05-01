@@ -132,8 +132,8 @@ contract LazySeedingTest is Test {
 
         vm.startPrank(trader);
 
-        uint256 sharesSparse = sparse.buySharesRange(100000, 101000, 1000_000000, 0, 0, trader);
-        uint256 sharesDense = dense.buySharesRange(100000, 101000, 1000_000000, 0, 0, trader);
+        (uint256 sharesSparse,,,,,) = sparse.buySharesRange(100000, 101000, 1000_000000, 0, 0, trader);
+        (uint256 sharesDense,,,,,) = dense.buySharesRange(100000, 101000, 1000_000000, 0, 0, trader);
 
         vm.stopPrank();
 
