@@ -1,6 +1,6 @@
 # Skepsis Market
 
-A prediction market protocol for continuous value ranges, built on EVM (Avalanche Fuji). Users bet on where a value will land — not just up or down, but a specific range — and the protocol prices every outcome automatically using LMSR (Logarithmic Market Scoring Rule).
+A prediction market protocol for continuous value ranges, built on EVM (Arbitrum Sepolia). Users bet on where a value will land — not just up or down, but a specific range — and the protocol prices every outcome automatically using LMSR (Logarithmic Market Scoring Rule).
 
 > **Hackathon submission.** 
 
@@ -88,7 +88,7 @@ skepsis_market/
 | Layer | Technology |
 |-------|-----------|
 | Smart contracts | Solidity 0.8.24, Foundry |
-| Chain | Avalanche Fuji Testnet |
+| Chain | Arbitrum Sepolia Testnet |
 | Settlement token | USDC (6 decimals) |
 | Backend | TypeScript, Node.js, viem |
 | Database | PostgreSQL via Prisma |
