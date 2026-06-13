@@ -159,4 +159,4 @@ Markets are curated, not permissionless: the factory gates creation by creator a
 
 ## License
 
-Copyright (c) 2026 Utpal Pal. All rights reserved. No part of this software may be used, distributed, or modified without the express written permission of the author.
+MIT © 2026 Skepsis. See [LICENSE](LICENSE).
