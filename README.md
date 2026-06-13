@@ -1,180 +1,162 @@
-# Skepsis Market
+# Skepsis — core contracts
 
-A prediction market protocol for continuous value ranges, built on EVM (Arbitrum Sepolia). Users bet on where a value will land — not just up or down, but a specific range — and the protocol prices every outcome automatically using LMSR (Logarithmic Market Scoring Rule).
+[Website](https://skepsis.live) · [App](https://alpha.skepsis.live) · [Docs](https://docs.skepsis.live) · [X](https://x.com/skepsis_market) · [Telegram](https://t.me/skepsis_market)
 
-> **Hackathon submission.** 
+Skepsis is a continuous-outcome prediction market protocol on EVM. Where a binary market prices *direction* (will a value cross a line, yes or no), Skepsis prices *magnitude*: a trader takes a position on the range a value will land in, and the payoff scales with how tight that range is. Pricing is automatic via LMSR (Logarithmic Market Scoring Rule) over a bucketed value axis, so every range is quotable without an order book or a counterparty.
 
----
+This repository contains the Solidity contracts: market, pricing math, liquidity vault, positions, routing, and resolution. It targets Arbitrum and settles in USDC.
 
-## How It Works
-
-Traditional prediction markets ask binary questions. Skepsis asks: **"Where exactly will the price be?"**
-
-A market divides a value range into buckets. Users select a range of buckets they believe the outcome will fall in, and buy shares. If the resolution value lands in any of their buckets, they receive $1 USDC per share.
-
-The LMSR market maker prices every outcome automatically — when demand increases for one range, its price rises and all other ranges get cheaper. No orderbook, no counterparty, no liquidity fragmentation.
+![Skepsis trading interface: the live bucket distribution and the trade panel, pricing a BTC range](assets/app-trading.png)
 
 ---
 
-## Repository Structure
+## Overview
 
-```
-skepsis_market/
-├── core-contracts/          # Solidity contracts (Foundry)
-│   ├── src/                 # Production contracts
-│   │   ├── LMSRMarket.sol       # Core market — pricing, trading, resolution
-│   │   ├── BucketTree.sol        # Sparse lazy segment tree for O(log N) range trades
-│   │   ├── LMSRCost.sol          # Pure LMSR cost function math
-│   │   ├── FixedPointMath.sol    # exp/ln operations (PRBMath wrapper)
-│   │   ├── Vault.sol             # ERC-4626 LP vault — seeds markets, harvests profits
-│   │   ├── MarketFactory.sol     # EIP-1167 clone factory for cheap market deployment
-│   │   └── PositionNFT.sol       # ERC-1155 position tokens
-│   ├── test/                # 296 tests — unit, integration, invariant, gas benchmarks
-│   ├── script/              # Deployment and lifecycle scripts
-│   └── ts-integration/      # TypeScript integration tests (viem)
-├── docs/                    # Hackathon documentation
-└── usdc-test/               # MockUSDC for local testing
-```
+A market divides a numerical outcome (a price, rate, ratio, or other Chainlink-readable value) into fixed-width **buckets**. A trader selects a contiguous range of buckets and buys shares; if the resolution value lands in any owned bucket, each share redeems for $1 of USDC. LMSR sets the price of every bucket continuously: buying a range raises its price and lowers the rest, while keeping the implied distribution coherent and the maximum payout bounded.
 
----
+![A binary contract pays a step; Skepsis pays a continuous curve, so the payoff scales with how close the outcome lands](assets/basis-risk.svg)
 
-## Key Design Decisions
+Three properties drive the design:
 
-**LMSR over AMM/orderbook** — Uniswap-style AMMs don't scale to 100+ discrete outcomes. LMSR was designed for exactly this: many outcomes, automatic pricing, bounded LP risk.
-
-**Range betting** — Users select a price range, not a single point. The correlated LMSR prices the entire range as one trade. One transaction, one position, O(log N) gas via the segment tree.
-
-**Segment tree (BucketTree)** — A range trade across 50 buckets normally requires 50 exp() calls. The lazy segment tree collapses this to ~7 operations regardless of range width. This is the difference between a $2 and a $15 trade.
-
-**EIP-1167 minimal proxies** — Each market is its own contract, but deployed as a ~45 byte proxy clone. Creating a market costs ~100K gas instead of ~4.5M.
-
-**ERC-4626 vault** — Shared LP pool that seeds new markets and harvests resolved capital. LPs deposit USDC and earn yield from market-making across all markets. Includes a withdrawal queue for fair exits when capital is deployed.
-
-**Alpha decay** — Markets launch with wide spreads (high alpha) to prevent early sniping, then tighten over time as the market finds fair prices.
-
-**ERC-1155 positions** — Positions are standard tokens in your wallet. Composable with other DeFi protocols — a range position on "BTC stays above $60K" is parametric insurance that could back a loan or be bundled into structured products.
+- **Continuous payoff.** One position prices a whole range. The trader who modeled the level is paid more than the one who only guessed the direction.
+- **Shared liquidity.** A single ERC-4626 vault seeds every market and recovers capital on resolution, so a new market is tradable immediately and LPs earn across the whole book.
+- **Bounded LP risk.** LMSR over-collateralizes (the pool always holds at least the maximum payout), and the liquidity parameter `alpha` caps worst-case LP loss.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────┐     creates clones      ┌──────────────┐
-│ MarketFactory├────────────────────────►│  LMSRMarket  │
-└─────────────┘                         │  (per market) │
-                                        └──────┬───────┘
-                                               │ uses
-                                        ┌──────┴───────┐
-                                        │  BucketTree  │  segment tree
-                                        │  LMSRCost    │  pricing math
-                                        │  FixedPointMath  exp/ln
-                                        └──────────────┘
+                    creates EIP-1167 clones
+   MarketFactory ───────────────────────────►  LMSRMarket  (one per market)
+        │                                          │
+        │ pulls seed liquidity                      │ pricing math
+        ▼                                          ▼
+      Vault  ◄──── surplus harvested ────────   BucketTree   (lazy segment tree, O(log N))
+   (ERC-4626)      on resolution                LMSRCost     (cost function)
+                                                FixedPointMath (exp / ln, PRBMath)
 
-┌─────────────┐    seeds / harvests     ┌──────────────┐
-│    Vault     ├───────────────────────►│  LMSRMarket  │
-│  (ERC-4626)  │◄───────────────────────┤              │
-└─────────────┘    surplus returns      └──────────────┘
+   TradeRouter ──── buy / sell / claim ────►  LMSRMarket  ────► PositionNFT (ERC-1155)
+   (user entry, slippage + deadline)
 
-┌─────────────┐    mint / burn          ┌──────────────┐
-│ PositionNFT ├◄───────────────────────│  LMSRMarket  │
-│  (ERC-1155)  │                        └──────────────┘
-└─────────────┘
+   ChainlinkPriceOracleResolver ──── resolve(value) ────►  LMSRMarket
+   (round-bracketed Chainlink feed, time-gated)
 ```
 
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Smart contracts | Solidity 0.8.24, Foundry |
-| Chain | Arbitrum Sepolia Testnet |
-| Settlement token | USDC (6 decimals) |
-| Backend | TypeScript, Node.js, viem |
-| Database | PostgreSQL via Prisma |
-| Frontend | Next.js, TypeScript |
-| Wallet / auth | Privy (email + browser wallets) |
-| Contract interaction | viem + wagmi |
+| Contract | Responsibility |
+|---|---|
+| `LMSRMarket.sol` | Core market. Pricing, range trading, alpha decay, resolution, claims, solvency. Deployed as a minimal-proxy clone per market. |
+| `BucketTree.sol` | Sparse lazy segment tree. Collapses an N-bucket range trade to ~O(log N) operations instead of N. |
+| `LMSRCost.sol` | Pure LMSR cost-function math (`C = alpha · ln(Σ exp(qᵢ/alpha))`). |
+| `FixedPointMath.sol` | Fixed-point `exp` / `ln` (wraps PRBMath) for the cost function. |
+| `Vault.sol` | ERC-4626 LP vault. Seeds markets, harvests resolved capital, enforces a single-market exposure cap, and serves exits through a withdrawal queue. |
+| `MarketFactory.sol` | EIP-1167 clone factory. Curated, creator-allowance gated. Wires each market to the vault, router, and position token. |
+| `TradeRouter.sol` | User-facing entry point for buy, sell, and claim. Handles USDC and position-token transfers, slippage bounds, and deadlines. Pausable. |
+| `PositionNFT.sol` | ERC-1155 positions. Token id encodes `(marketId << 128) \| (rangeLower << 64) \| rangeUpper`. |
+| `ChainlinkPriceOracleResolver.sol` | Resolves price markets from a Chainlink feed by pinning the round that brackets the scheduled resolution time. |
 
 ---
 
-## Getting Started
+## Core mechanisms
 
-### Prerequisites
+### LMSR pricing over a bucket tree
+
+An order book over a numerical range needs a resting quote on every bucket; thin markets leave gaps. LMSR is a single automated maker over the entire range: there is always a price, depth is shared across every bucket, and the cost of any trade is the difference in the cost function before and after. A naïve range trade evaluates `exp()` per bucket; `BucketTree` applies the same delta to a whole range with lazy propagation, so a 50-bucket trade costs roughly the same gas as a 5-bucket trade.
+
+### The vault (ERC-4626)
+
+`Vault.sol` is the protocol's liquidity layer. LPs deposit USDC and receive shares; the share price tracks realized market-making P&L across all markets.
+
+- **Seeding.** When the factory creates a market it calls `fundNewMarket`, and the vault deploys seed liquidity so the market is tradable on creation. `maxMarketBps` caps how much of net assets any single market may hold.
+- **Harvest.** On resolution the market returns its residual pool balance to the vault. Over-collateralization means the pool always covered the maximum payout; the surplus over claims is LP yield.
+- **Withdrawal queue.** Because capital is deployed into live markets, instant withdrawals are limited to the liquid buffer. Larger exits use a Lido-style queue: shares burn at request, and the claim is honored as capital frees up. There is no cancellation, which keeps share accounting unambiguous.
+- **Gating.** `setDepositsEnabled` and OpenZeppelin `Pausable` gate deposits and withdrawals for controlled rollout; the owner is always permitted to seed.
+
+![One ERC-4626 vault seeds every market and recovers capital on resolution](assets/vault-recycle.svg)
+
+### Alpha decay
+
+`alpha` is the LMSR liquidity parameter: high alpha means deep liquidity and small price impact, low alpha means a shallower book and larger impact. A market can be configured to **decay alpha linearly from `alphaInitial` to `alphaFinal`** over `decayDuration` (`alphaFinal` is floored at 10% of `alphaInitial`). The book starts deep and tightens toward resolution.
+
+This is **sniper defense**. Near resolution, late information is most valuable; a shallow book at that point means an informed trader cannot size up cheaply against LPs. Decay is checkpointed per epoch so reads stay cheap, and a market with `decayDuration == 0` runs at constant alpha.
+
+### Resolution and settlement
+
+`ChainlinkPriceOracleResolver` registers a market against a specific Chainlink feed, divisor, and staleness threshold (a curated, allowance-gated step). At the scheduled resolution time it pins the feed round that brackets that timestamp, verifies it on-chain, and submits the value. The market maps the value to the winning bucket. Resolution is numerical and time-gated — no semantic interpretation.
+
+Settlement is over-collateralized: the pool holds at least the maximum payout at all times, winners `claim` $1 per winning share through the `TradeRouter`, and the residual is harvested back to the vault. Worst-case LP loss is bounded by alpha.
+
+### Positions
+
+Positions are ERC-1155 tokens held in the trader's wallet, so they are composable with other protocols. The token id encodes the market and the exact bucket range, which lets the protocol key positions deterministically without per-position storage.
+
+---
+
+## Build and test
 
 ```sh
-# Install Foundry
+# Foundry
 curl -L https://foundry.paradigm.xyz | bash && foundryup
-```
 
-### Build and Test
-
-```sh
-cd core-contracts
 forge install
 forge build
-forge test -vv          # 296 tests
+forge test -vv
 ```
 
-### Local Deployment (Anvil)
+The suite covers LMSR and fixed-point math, multi-bucket range trades and segment-tree correctness, the full create → trade → resolve → claim lifecycle, solvency invariants (pool always covers max payout), alpha-decay loss bounds, and gas benchmarks across bucket counts.
 
 ```sh
-# Terminal 1: start local chain
-cd core-contracts
-anvil --chain-id 43113 --block-time 2
+forge snapshot          # gas benchmarks
+forge test --match-path 'test/**/*Invariant*'
+```
 
-# Terminal 2: deploy
-cd core-contracts
-USDC_ADDRESS=0x0000000000000000000000000000000000000000 \
+## Deployment
+
+```sh
+# Arbitrum Sepolia
 forge script script/Deploy.s.sol:DeployScript \
-  --rpc-url http://127.0.0.1:8545 --broadcast --chain-id 43113
+  --rpc-url arb_sepolia --broadcast --verify
 ```
 
-This deploys: FixedPointMath -> LMSRMarket implementation -> PositionNFT -> MarketFactory -> Vault -> seeds vault with $500K USDC -> creates a sample market.
+`Deploy.s.sol` deploys `FixedPointMath` → the `LMSRMarket` implementation → `PositionNFT` → `MarketFactory` → `Vault` → `TradeRouter` → `ChainlinkPriceOracleResolver`, wires them together, and seeds the vault. RPC and key are read from the environment (`.env.example`).
 
-
-
----
-
-## Test Coverage
-
-296 passing tests across:
-
-- **Unit tests** — LMSR math, fixed-point arithmetic, position accounting, fee routing
-- **Range trade tests** — multi-bucket buys/sells, segment tree correctness
-- **Integration tests** — full market lifecycle (create -> trade -> resolve -> claim)
-- **Invariant tests** — solvency (pool always covers max payout), position accounting consistency
-- **Gas benchmarks** — range trade costs across different bucket counts and tree depths
-- **Alpha decay tests** — spread tightening over time, LP loss bounds
-- **Expansion tests** — dynamic range activation for markets that outgrow initial bounds
-
----
-
-## Market Lifecycle
-
-1. **Create** — Factory deploys a proxy clone with configured range, bucket count, alpha, and fees
-2. **Seed** — Vault deploys USDC as initial liquidity
-3. **Trade** — Users buy/sell range positions; LMSR prices adjust automatically
-4. **Resolve** — Resolver submits the actual outcome value; contract maps it to a winning bucket
-5. **Claim** — Winners redeem shares at $1 USDC each
-6. **Harvest** — Vault reclaims remaining pool balance as LP profit
-
----
-
-## Contract Addresses
+## Deployed addresses — Arbitrum Sepolia
 
 ```
-USDC_ADDRESS=0x281092FAF10e2D78C21DC0930834369bA45EA03C
-LMSR_IMPL_ADDRESS=0x4f2342A85ab5221012A14F0094e17D6DF745178D
-POSITION_NFT_ADDRESS=0xf9e67aAe3f0B7fAF38f86cE6d183272Aa641b8DC
-MARKET_FACTORY_ADDRESS=0xa7DEc744e7F65846AA724bD8342c4736DC05581F
-VAULT_ADDRESS=0x6cb65ddB60cA86c5D130f71bb18daAAc2Baf3948
-SAMPLE_MARKET_ADDRESS=0xDBF2db7D4382b9d8F8f4364f0243818E5980b8aA
+MARKET_FACTORY      0xF1E02178c1d6f933A601136875dbB3aAe9117105
+LMSR_IMPLEMENTATION 0x65Bcc46904dB28F7D571940A11db3DE6bf02A24c
+VAULT               0xc4b0F59d9067A033654F9E0318325246297D6b0e
+POSITION_NFT        0xBeeF92998F4044e1c53d0707e59eB32887e5c661
+TRADE_ROUTER        0x8020497fB3F46E0e842A7617fAD8a4902F0A0ac4
+ORACLE_RESOLVER     0x2Fe5b0b134274DF7e1000C9bD8a65C5b47598973
+USDC                0x82dB8786B5630F19D8e6C86A697a6d92e6363732
 ```
----
 
+## Stack
 
+Solidity 0.8.28 · Foundry · OpenZeppelin · PRBMath · Arbitrum · USDC (6 decimals). Markets are EIP-1167 clones; the build uses `via_ir` with `optimizer_runs = 1` to minimize deployment bytecode.
+
+## Documentation
+
+- [`docs/LMSR_ALGORITHM_BLUEPRINT.md`](docs/LMSR_ALGORITHM_BLUEPRINT.md) — pricing and the bucket tree
+- [`docs/LIFECYCLE.md`](docs/LIFECYCLE.md) — market lifecycle, end to end
+- [`docs/DECIMAL_HANDLING.md`](docs/DECIMAL_HANDLING.md) — fixed-point and 6-decimal conventions
+- [`docs/SOLIDITY_SRS.md`](docs/SOLIDITY_SRS.md) — contract requirements and interfaces
+- [`docs/FE_INTEGRATION_GUIDE.md`](docs/FE_INTEGRATION_GUIDE.md) — integration reference
+
+## Security model
+
+Markets are curated, not permissionless: the factory gates creation by creator allowance, and the resolver gates registration the same way. Every market resolves to a number from a named Chainlink feed. The pool is over-collateralized on every trade, and worst-case LP loss is bounded by alpha. The trust model is read-the-code; the contracts are verified on Arbiscan.
+
+## Links
+
+- Website: https://skepsis.live
+- App: https://alpha.skepsis.live
+- Docs: https://docs.skepsis.live
+- X: https://x.com/skepsis_market
+- Telegram: https://t.me/skepsis_market
+- GitHub: https://github.com/skepsis-market
 
 ## License
 
-"Copyright (c) 2026 Utpal Pal. All rights reserved. No part of this software may be used, distributed, or modified without the express written permission of the author."
+Copyright (c) 2026 Utpal Pal. All rights reserved. No part of this software may be used, distributed, or modified without the express written permission of the author.
